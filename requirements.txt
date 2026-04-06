@@ -1,0 +1,34 @@
+# Polymarket Weather Trading Bot
+# Core dependencies
+
+# Polymarket SDK
+py-clob-client>=0.34.6
+
+# HTTP & API
+requests>=2.31.0
+aiohttp>=3.9.0
+
+# Weather API
+pyowm>=3.3.0
+
+# Web3 & Crypto (Polygon wallet)
+web3>=6.15.0
+eth-account>=0.10.0
+
+# Data & Analysis
+pandas>=2.1.0
+numpy>=1.26.0
+
+# Configuration
+python-dotenv>=1.0.0
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# Logging & Monitoring
+python-json-logger>=2.0.0
+
+# Utilities
+tenacity>=8.2.0
+
+# WebSocket
+websockets>=12.0

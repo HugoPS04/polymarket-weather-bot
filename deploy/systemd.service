@@ -1,0 +1,46 @@
+[Unit]
+Description=Polymarket Weather Trading Bot
+After=network.target
+Documentation=https://github.com/yourusername/polymarket-weather-bot
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/polymarket-weather-bot
+
+# Load environment from .env file
+EnvironmentFile=/home/ubuntu/polymarket-weather-bot/.env
+
+# Virtual environment Python (recommended)
+ExecStart=/home/ubuntu/polymarket-weather-bot/venv/bin/python main.py run
+
+# Alternative: system Python
+# ExecStart=/usr/bin/python3 main.py run
+
+# Restart policy
+Restart=always
+RestartSec=10
+
+# Graceful shutdown
+TimeoutStopSec=30
+KillMode=mixed
+
+# Resource limits
+LimitNOFILE=65535
+Nice=5
+MemoryMax=512M
+
+# Logging - systemd journal
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=polymarket-bot
+
+# Security hardening (optional - may need adjustment)
+# NoNewPrivileges=true
+# ProtectSystem=strict
+# ProtectHome=read-only
+# ReadWritePaths=/home/ubuntu/polymarket-weather-bot/logs /home/ubuntu/polymarket-weather-bot/data
+
+[Install]
+WantedBy=multi-user.target
