@@ -11,6 +11,7 @@ Usage:
     python main.py --scan       # Scan markets only
 """
 import argparse
+import asyncio
 import logging
 import sys
 import json
@@ -46,8 +47,8 @@ def setup_logging(settings):
     logging.getLogger("py_clob_client").setLevel(logging.INFO)
 
 
-def cmd_run(args):
-    """Run the trading bot."""
+async def cmd_run_async(args):
+    """Run the trading bot (async version for websocket mode)."""
     import asyncio
     from src.websocket_client import PolymarketWebSocket, PriceUpdate
     
@@ -89,10 +90,21 @@ def cmd_run(args):
             bot.stop()
             ws_task.cancel()
         finally:
-            asyncio.run(bot.ws_monitor.ws.disconnect())
+            await bot.ws_monitor.ws.disconnect()
     else:
         logger.info("Starting continuous trading loop (polling mode)...")
         bot.start()
+
+
+def cmd_run(args):
+    """Run the trading bot."""
+    if args.debug:
+        logging.getLogger().setLevel(logging.DEBUG)
+    
+    if args.websocket:
+        asyncio.run(cmd_run_async(args))
+    else:
+        asyncio.run(cmd_run_async(args))
 
 
 def cmd_balance(args):
@@ -105,7 +117,7 @@ def cmd_balance(args):
     
     balance = client.get_balance()
     print(f"\nUSDC Balance: ${balance.get('usdc', 0):,.2f}")
-    print(f"Polygon Address: {client.client.get_user_address()}")
+    print(f"Polygon Address: {client.client.get_address()}")
 
 
 def cmd_scan(args):
@@ -128,24 +140,39 @@ def cmd_scan(args):
 
 
 def cmd_weather(args):
-    """Test weather API."""
+    """Test weather API with consensus analysis."""
     settings = get_settings()
     setup_logging(settings)
     
-    from src.weather_client import WeatherClient
+    from src.consensus_engine import ConsensusEngine
     
-    client = WeatherClient(settings)
+    engine = ConsensusEngine(settings)
+    
+    print("\n🌡️ Weather Consensus Analysis")
+    print("="*60)
     
     for loc in settings.parsed_locations:
-        print(f"\n=== {loc.name} ({loc.lat}, {loc.lon}) ===")
-        analysis = client.analyze_precipitation_chance(loc)
+        print(f"\n📍 {loc.name} ({loc.lat}, {loc.lon})")
+        print("-"*40)
         
-        if "error" not in analysis:
-            print(f"Hours analyzed: {analysis.get('hours_analyzed', 0)}")
-            print(f"Avg precipitation prob: {analysis.get('avg_precipitation_prob', 0):.1f}%")
-            print(f"Max precipitation prob: {analysis.get('max_precipitation_prob', 0):.1f}%")
-            print(f"Rainy hours: {analysis.get('rainy_hours', 0)} ({analysis.get('rainy_percentage', 0):.1f}%)")
-            print(f"Total precipitation: {analysis.get('total_precipitation_mm', 0):.1f}mm")
+        # Get consensus forecast
+        consensus = engine.weather_client.get_consensus_forecast(loc, days=7)
+        
+        if not consensus:
+            print("  No data available")
+            continue
+        
+        # Show next 3 days
+        for i, (date, forecast) in enumerate(list(consensus.items())[:3]):
+            print(f"\n  📅 {date}:")
+            print(f"     Temp: {forecast.min_temp_f:.0f}-{forecast.max_temp_f:.0f}°F "
+                  f"(avg: {forecast.avg_temp_f:.0f}°F)")
+            print(f"     Precip: {forecast.avg_precip_prob:.0f}% chance")
+            print(f"     APIs: {len(forecast.forecasts)} sources "
+                  f"(agreement: {forecast.temp_agreement:.0%})")
+            print(f"     Sources: {[f.source for f in forecast.forecasts]}")
+        
+        print()
 
 
 def cmd_ws(args):
@@ -200,6 +227,7 @@ def main():
     run_parser = subparsers.add_parser("run", help="Run the trading bot")
     run_parser.add_argument("--once", action="store_true", help="Run single cycle only")
     run_parser.add_argument("--websocket", action="store_true", help="Enable WebSocket real-time mode")
+    run_parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     run_parser.set_defaults(func=cmd_run)
     
     # Balance command
@@ -212,8 +240,12 @@ def main():
     scan_parser.set_defaults(func=cmd_scan)
     
     # Weather command
-    weather_parser = subparsers.add_parser("weather", help="Test weather API")
+    weather_parser = subparsers.add_parser("weather", help="Test weather API with consensus")
     weather_parser.set_defaults(func=cmd_weather)
+    
+    # Consensus command (alias for weather)
+    consensus_parser = subparsers.add_parser("consensus", help="Show weather consensus analysis")
+    consensus_parser.set_defaults(func=cmd_weather)
     
     # WebSocket command
     ws_parser = subparsers.add_parser("ws", help="Test WebSocket streaming")

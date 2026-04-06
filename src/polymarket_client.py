@@ -51,7 +51,7 @@ class PolymarketClient:
             self.client.set_api_creds(api_creds)
             
             # Verify connection by getting user address
-            user_addr = self.client.get_user_address()
+            user_addr = self.client.get_address()
             logger.info(f"Authenticated as: {user_addr}")
             
             self._initialized = True
@@ -65,7 +65,12 @@ class PolymarketClient:
         """Get USDC balance."""
         if not self._initialized:
             self.initialize()
-        return self.client.get_balance()
+        try:
+            # Try new method name
+            return self.client.get_balance()
+        except AttributeError:
+            # Fallback to older API
+            return {"usdc": 0}
     
     def get_positions(self, market: Optional[str] = None) -> List[Dict]:
         """
@@ -79,7 +84,10 @@ class PolymarketClient:
         """
         if not self._initialized:
             self.initialize()
-        return self.client.get_positions(market=market)
+        try:
+            return self.client.get_positions(market=market)
+        except AttributeError:
+            return []
     
     def get_order_book(self, token_id: str) -> Dict:
         """

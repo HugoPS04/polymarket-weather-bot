@@ -2,10 +2,27 @@
 Bot configuration using Pydantic settings.
 Loads from .env file or environment variables.
 """
+import os
+from pathlib import Path
 from pydantic_settings import BaseSettings
 from pydantic import Field
 from typing import List, Optional
 from functools import lru_cache
+
+
+# Find .env file - look in project root and current directory
+def find_env_file() -> str:
+    """Find the .env file path."""
+    # Check current directory first
+    env_path = Path(".env")
+    if env_path.exists():
+        return str(env_path.absolute())
+    # Check project root
+    project_root = Path(__file__).parent.parent
+    env_path = project_root / ".env"
+    if env_path.exists():
+        return str(env_path.absolute())
+    return ".env"
 
 
 class LocationConfig(BaseSettings):
@@ -19,7 +36,7 @@ class BotSettings(BaseSettings):
     """Main bot configuration."""
     
     class Config:
-        env_file = ".env"
+        env_file = find_env_file()
         env_file_encoding = "utf-8"
         case_sensitive = False
     

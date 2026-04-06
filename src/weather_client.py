@@ -1,12 +1,12 @@
 """
-Weather API client supporting multiple providers (NOAA, OpenWeatherMap).
-Fetches forecasts and historical data for opportunity analysis.
+Multi-API Weather Client with consensus support.
+Fetches forecasts from multiple providers and returns unified data.
 """
 import logging
 import requests
 from typing import Dict, List, Optional, Any
-from datetime import datetime, timedelta
 from dataclasses import dataclass
+from datetime import datetime
 
 from config.settings import BotSettings, get_settings, LocationConfig
 
@@ -28,197 +28,211 @@ class WeatherForecast:
     pressure: float  # hPa
     cloud_cover: float  # %
     visibility: float  # km
+    source: str = "unknown"  # API source
+
+
+@dataclass
+class ConsensusForecast:
+    """Consensus forecast from multiple APIs."""
+    location: str
+    timestamp: datetime
+    
+    # Temperatures (Fahrenheit)
+    avg_temp_f: float
+    min_temp_f: float
+    max_temp_f: float
+    temp_sources: List[float]  # Individual API readings
+    
+    # Precipitation
+    avg_precip_prob: float
+    max_precip_prob: float
+    precip_sources: List[float]
+    
+    # Precipitation amount
+    total_precip_mm: float
+    precip_amount_sources: List[float]
+    
+    # Agreement metrics
+    temp_agreement: float  # 0-1, how close are the readings
+    precip_agreement: float  # 0-1
+    
+    # Confidence score (0-1)
+    confidence: float
+    
+    # Individual forecasts for reference
+    forecasts: List[WeatherForecast]
+    
+    @property
+    def temp_consensus(self) -> float:
+        """Temperature consensus as percentage."""
+        return sum(self.temp_sources) / len(self.temp_sources) if self.temp_sources else 0
+    
+    @property
+    def precip_consensus(self) -> float:
+        """Precipitation probability consensus."""
+        return sum(self.precip_sources) / len(self.precip_sources) if self.precip_sources else 0
 
 
 class WeatherClient:
-    """Multi-provider weather API client."""
+    """Multi-provider weather API client with consensus support."""
     
     # NOAA API endpoints
-    NOAA_POINTS_API = "https://api.weather.gov/points/{lat},{lon}"
-    NOAA_FORECAST_API = "https://api.weather.gov/gridpoints/{wfo},{x},{y}/forecast"
+    NOAA_API = "https://api.weather.gov/points/{lat},{lon}"
+    NOAA_FORECAST = "https://api.weather.gov/gridpoints/{wfo}/{x},{y}/forecast"
     
-    # Open-Meteo API (free, no key required - recommended alternative to NOAA)
+    # Open-Meteo API (free, no key)
     OPEN_METEO_API = "https://api.open-meteo.com/v1/forecast"
+    
+    # Visual Crossing (free tier, good for Google-adjacent data)
+    VISUAL_CROSSING_API = "https://weather.visualcrossing.com/WeatherAPI/timeline"
     
     def __init__(self, settings: Optional[BotSettings] = None):
         self.settings = settings or get_settings()
         self.session = requests.Session()
         self.session.headers.update({
-            "User-Agent": "PolymarketWeatherBot/1.0 (hugo@example.com)",
-            "Accept": "application/geo+json"
+            "User-Agent": "PolymarketWeatherBot/1.0",
+            "Accept": "application/json"
         })
-        # Cache for grid points to avoid repeated lookups
-        self._grid_cache: Dict[str, Dict] = {}
-        
-    def get_forecast(self, location: LocationConfig, days: int = 7) -> List[WeatherForecast]:
-        """
-        Get weather forecast for a location.
-        
-        Args:
-            location: Location config with lat/lon
-            days: Number of forecast days
-            
-        Returns:
-            List of WeatherForecast objects
-        """
-        if self.settings.weather_api_source == "openweathermap":
-            return self._get_openweathermap_forecast(location, days)
-        elif self.settings.weather_api_source == "noaa":
-            return self._get_noaa_forecast(location, days)
-        else:
-            # Default to Open-Meteo (global fallback)
-            return self._get_openmeteo_forecast(location, days)
     
-    def _get_noaa_grid_point(self, lat: float, lon: float) -> Optional[Dict]:
+    def get_consensus_forecast(
+        self, 
+        location: LocationConfig, 
+        days: int = 7
+    ) -> Dict[str, ConsensusForecast]:
         """
-        Get NOAA grid point info for coordinates.
+        Get consensus forecast from all available APIs.
         
-        Args:
-            lat: Latitude
-            lon: Longitude
-            
         Returns:
-            Dict with wfo (office), gridX, gridY, and forecast URLs
+            Dict mapping date -> ConsensusForecast
         """
-        cache_key = f"{lat},{lon}"
-        if cache_key in self._grid_cache:
-            return self._grid_cache[cache_key]
+        results = {}
         
-        url = self.NOAA_POINTS_API.format(lat=lat, lon=lon)
+        # Fetch from all APIs in parallel
+        forecasts = self._fetch_all_apis(location, days)
         
+        if not forecasts:
+            return results
+        
+        # Group by date
+        by_date = {}
+        for f in forecasts:
+            date_key = f.timestamp.date()
+            if date_key not in by_date:
+                by_date[date_key] = []
+            by_date[date_key].append(f)
+        
+        # Build consensus for each date
+        for date, day_forecasts in by_date.items():
+            consensus = self._build_consensus(location.name, date, day_forecasts)
+            results[str(date)] = consensus
+        
+        return results
+    
+    def _fetch_all_apis(
+        self, 
+        location: LocationConfig, 
+        days: int
+    ) -> List[WeatherForecast]:
+        """Fetch forecasts from all available APIs."""
+        all_forecasts = []
+        
+        # Open-Meteo (always available, free)
+        openmeteo = self._get_openmeteo_forecast(location, days)
+        all_forecasts.extend(openmeteo)
+        
+        # Visual Crossing (free tier)
         try:
-            response = self.session.get(url, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            
-            properties = data.get("properties", {})
-            grid_info = {
-                "wfo": properties.get("cwa"),
-                "gridX": properties.get("gridX"),
-                "gridY": properties.get("gridY"),
-                "forecast": properties.get("forecast"),
-                "forecastHourly": properties.get("forecastHourly"),
-                "forecastGridData": properties.get("forecastGridData")
-            }
-            
-            # Cache for 1 hour (grids rarely change)
-            self._grid_cache[cache_key] = grid_info
-            logger.debug(f"NOAA grid point for {lat},{lon}: {grid_info['wfo']}/{grid_info['gridX']},{grid_info['gridY']}")
-            return grid_info
-            
+            visual_crossing = self._get_visual_crossing_forecast(location, days)
+            all_forecasts.extend(visual_crossing)
         except Exception as e:
-            logger.error(f"NOAA grid point API error for {lat},{lon}: {e}")
-            return None
-    
-    def _get_noaa_forecast(self, location: LocationConfig, days: int) -> List[WeatherForecast]:
-        """
-        Fetch forecast from NOAA NWS API (free, US only).
+            logger.warning(f"Visual Crossing failed: {e}")
         
-        Args:
-            location: Location config
-            days: Number of forecast days (NOAA provides 7 days)
-            
-        Returns:
-            List of WeatherForecast objects
-        """
-        # Get grid point info
-        grid_info = self._get_noaa_grid_point(location.lat, location.lon)
-        if not grid_info:
-            logger.warning(f"NOAA grid lookup failed for {location.name}, falling back to Open-Meteo")
-            return self._get_openmeteo_forecast(location, days)
+        # NOAA (US only, try if lat/lon looks like US)
+        if self._is_us_location(location):
+            try:
+                noaa = self._get_noaa_forecast(location, days)
+                all_forecasts.extend(noaa)
+            except Exception as e:
+                logger.warning(f"NOAA failed: {e}")
         
-        # Use hourly forecast for detailed data
-        url = grid_info.get("forecastHourly")
-        if not url:
-            logger.warning(f"NOAA hourly forecast URL not available for {location.name}")
-            return self._get_openmeteo_forecast(location, days)
+        return all_forecasts
+    
+    def _build_consensus(
+        self, 
+        location_name: str,
+        date: Any,
+        forecasts: List[WeatherForecast]
+    ) -> ConsensusForecast:
+        """Build consensus forecast from multiple API results."""
+        temps_f = [f.temperature_f for f in forecasts]
+        precip_probs = [f.precipitation_prob for f in forecasts]
+        precip_amounts = [f.precipitation_mm for f in forecasts]
         
-        try:
-            response = self.session.get(url, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            
-            forecasts = []
-            periods = data.get("properties", {}).get("periods", [])
-            
-            for period in periods:
-                # Parse temperature
-                temp_f = period.get("temperature", 0)
-                temp_c = (temp_f - 32) * 5/9
-                
-                # Parse wind speed (NOAA gives mph, convert to km/h)
-                wind_speed = period.get("windSpeed", "0 mph")
-                if isinstance(wind_speed, str):
-                    wind_speed = float(wind_speed.split()[0]) * 1.60934
-                
-                # Parse precipitation probability
-                precip_prob = period.get("probabilityOfPrecipitation", {})
-                if isinstance(precip_prob, dict):
-                    precip_prob = precip_prob.get("value", 0) or 0
-                else:
-                    precip_prob = precip_prob or 0
-                
-                # Map NOAA short forecast to condition
-                condition = period.get("shortForecast", "Unknown")
-                
-                # Estimate other fields from condition
-                humidity = self._estimate_humidity_from_condition(condition)
-                cloud_cover = self._estimate_cloud_cover_from_condition(condition)
-                
-                forecast = WeatherForecast(
-                    location=location.name,
-                    timestamp=datetime.fromisoformat(period.get("startTime", datetime.now().isoformat())),
-                    temperature=temp_c,
-                    temperature_f=temp_f,
-                    condition=condition,
-                    precipitation_prob=precip_prob,
-                    precipitation_mm=0,  # NOAA hourly doesn't include precip amount
-                    wind_speed=wind_speed,
-                    humidity=humidity,
-                    pressure=1013.25,  # Default sea level pressure
-                    cloud_cover=cloud_cover,
-                    visibility=10.0  # Default 10km visibility
-                )
-                forecasts.append(forecast)
-            
-            logger.debug(f"Fetched {len(forecasts)} hourly forecasts from NOAA for {location.name}")
-            return forecasts
-            
-        except Exception as e:
-            logger.error(f"NOAA forecast API error for {location.name}: {e}")
-            return self._get_openmeteo_forecast(location, days)
+        # Calculate agreements
+        temp_agreement = self._calculate_agreement(temps_f)
+        precip_agreement = self._calculate_agreement(precip_probs)
+        
+        # Count unique API sources (not individual readings)
+        unique_apis = set(f.source for f in forecasts)
+        api_count = len(unique_apis)
+        
+        # Use the higher agreement (temp or precip) for confidence
+        # This prevents low precip agreement from hurting temp market confidence
+        best_agreement = max(temp_agreement, precip_agreement)
+        
+        # With 2+ APIs agreeing: full weight, with 1 API: reduced confidence
+        api_factor = min(1.0, api_count / 2)
+        confidence = best_agreement * api_factor
+        
+        return ConsensusForecast(
+            location=location_name,
+            timestamp=datetime.combine(date, datetime.min.time()),
+            avg_temp_f=sum(temps_f) / len(temps_f) if temps_f else 70,
+            min_temp_f=min(temps_f) if temps_f else 60,
+            max_temp_f=max(temps_f) if temps_f else 80,
+            temp_sources=temps_f,
+            avg_precip_prob=sum(precip_probs) / len(precip_probs) if precip_probs else 0,
+            max_precip_prob=max(precip_probs) if precip_probs else 0,
+            precip_sources=precip_probs,
+            total_precip_mm=sum(precip_amounts) if precip_amounts else 0,
+            precip_amount_sources=precip_amounts,
+            temp_agreement=temp_agreement,
+            precip_agreement=precip_agreement,
+            confidence=confidence,
+            forecasts=forecasts
+        )
     
-    def _estimate_humidity_from_condition(self, condition: str) -> float:
-        """Estimate humidity from NOAA condition description."""
-        condition_lower = condition.lower()
-        if "rain" in condition_lower or "storm" in condition_lower or "showers" in condition_lower:
-            return 85.0
-        elif "cloudy" in condition_lower or "overcast" in condition_lower:
-            return 70.0
-        elif "partly" in condition_lower:
-            return 55.0
-        elif "clear" in condition_lower or "sunny" in condition_lower:
-            return 40.0
-        else:
-            return 60.0
+    def _calculate_agreement(self, values: List[float]) -> float:
+        """Calculate how close values are. 1.0 = perfect agreement."""
+        if not values:
+            return 0.0
+        if len(values) < 2:
+            return 1.0
+        
+        avg = sum(values) / len(values)
+        if avg == 0:
+            return 1.0
+        
+        # Calculate coefficient of variation (lower = more agreement)
+        variance = sum((v - avg) ** 2 for v in values) / len(values)
+        std_dev = variance ** 0.5
+        cv = std_dev / avg if avg != 0 else 0
+        
+        # Convert to agreement score (1 - CV, clamped to 0-1)
+        agreement = max(0, 1 - cv)
+        return min(1.0, agreement)
     
-    def _estimate_cloud_cover_from_condition(self, condition: str) -> float:
-        """Estimate cloud cover from NOAA condition description."""
-        condition_lower = condition.lower()
-        if "clear" in condition_lower or "sunny" in condition_lower:
-            return 10.0
-        elif "partly" in condition_lower:
-            return 45.0
-        elif "mostly" in condition_lower and "cloud" in condition_lower:
-            return 70.0
-        elif "cloudy" in condition_lower or "overcast" in condition_lower:
-            return 90.0
-        else:
-            return 50.0
+    def _is_us_location(self, location: LocationConfig) -> bool:
+        """Check if location is in US (NOAA only covers US)."""
+        lat, lon = location.lat, location.lon
+        return (24 <= lat <= 50) and (-130 <= lon <= -65)
     
-    def _get_openmeteo_forecast(self, location: LocationConfig, days: int) -> List[WeatherForecast]:
+    def _get_openmeteo_forecast(
+        self, 
+        location: LocationConfig, 
+        days: int
+    ) -> List[WeatherForecast]:
         """Fetch forecast from Open-Meteo API (free, no key)."""
-        
         params = {
             "latitude": location.lat,
             "longitude": location.lon,
@@ -232,13 +246,17 @@ class WeatherClient:
                 "surface_pressure",
                 "cloud_cover",
                 "visibility"
-            ].join(","),
+            ],
             "forecast_days": days,
             "timezone": "auto"
         }
         
         try:
-            response = self.session.get(self.OPEN_METEO_API, params=params, timeout=10)
+            response = self.session.get(
+                self.OPEN_METEO_API, 
+                params=params, 
+                timeout=10
+            )
             response.raise_for_status()
             data = response.json()
             
@@ -261,59 +279,138 @@ class WeatherClient:
                     humidity=hourly.get("relative_humidity_2m", [0] * len(timestamps))[i],
                     pressure=hourly.get("surface_pressure", [0] * len(timestamps))[i],
                     cloud_cover=hourly.get("cloud_cover", [0] * len(timestamps))[i],
-                    visibility=hourly.get("visibility", [10] * len(timestamps))[i]
+                    visibility=hourly.get("visibility", [10] * len(timestamps))[i],
+                    source="open-meteo"
                 )
                 forecasts.append(forecast)
             
-            logger.debug(f"Fetched {len(forecasts)} hourly forecasts for {location.name}")
+            logger.debug(f"Open-Meteo: fetched {len(forecasts)} forecasts for {location.name}")
             return forecasts
             
         except Exception as e:
-            logger.error(f"Open-Meteo API error for {location.name}: {e}")
+            logger.error(f"Open-Meteo error for {location.name}: {e}")
             return []
     
-    def _get_openweathermap_forecast(self, location: LocationConfig, days: int) -> List[WeatherForecast]:
-        """Fetch forecast from OpenWeatherMap API (requires API key)."""
-        if not self.settings.openweather_api_key:
-            logger.warning("OpenWeatherMap API key not configured, falling back to Open-Meteo")
-            return self._get_openmeteo_forecast(location, days)
-        
-        url = "https://api.openweathermap.org/data/2.5/forecast"
+    def _get_visual_crossing_forecast(
+        self, 
+        location: LocationConfig, 
+        days: int
+    ) -> List[WeatherForecast]:
+        """Fetch forecast from Visual Crossing (free tier, good data)."""
+        # Visual Crossing free tier: 1000 days per month
+        url = f"{self.VISUAL_CROSSING_API}/{location.lat},{location.lon}"
         params = {
-            "lat": location.lat,
-            "lon": location.lon,
-            "appid": self.settings.openweather_api_key,
-            "units": "metric"
+            "unitGroup": "us",  # Fahrenheit
+            "include": "hours",
+            "key": "demo",  # Limited free key for testing
+            "elements": "temp,humidity,precip,precipprob,windspeed,conditions,visibility",
+            "days": days
         }
         
         try:
             response = self.session.get(url, params=params, timeout=10)
+            # If demo key fails, try without (some endpoints are free)
+            if response.status_code == 400:
+                return []
+            
             response.raise_for_status()
             data = response.json()
             
             forecasts = []
-            for item in data.get("list", []):
-                forecast = WeatherForecast(
-                    location=location.name,
-                    timestamp=datetime.fromtimestamp(item.get("dt", 0)),
-                    temperature=item.get("main", {}).get("temp", 0),
-                    temperature_f=item.get("main", {}).get("temp", 0) * 9/5 + 32,
-                    condition=item.get("weather", [{}])[0].get("description", "unknown"),
-                    precipitation_prob=item.get("pop", 0) * 100,
-                    precipitation_mm=item.get("rain", {}).get("3h", 0),
-                    wind_speed=item.get("wind", {}).get("speed", 0) * 3.6,  # m/s to km/h
-                    humidity=item.get("main", {}).get("humidity", 0),
-                    pressure=item.get("main", {}).get("pressure", 0),
-                    cloud_cover=item.get("clouds", {}).get("all", 0),
-                    visibility=item.get("visibility", 10000) / 1000  # m to km
-                )
-                forecasts.append(forecast)
+            for day in data.get("days", []):
+                for hour_data in day.get("hours", []):
+                    ts = hour_data.get("datetime")
+                    if not ts:
+                        continue
+                    
+                    # Parse timestamp
+                    dt = datetime.strptime(f"{day.get('date')} {ts}", "%Y-%m-%d %H:%M:%S")
+                    
+                    forecast = WeatherForecast(
+                        location=location.name,
+                        timestamp=dt,
+                        temperature=hour_data.get("temp", 70),
+                        temperature_f=hour_data.get("temp", 70),  # Already in Fahrenheit
+                        condition=hour_data.get("conditions", "Clear"),
+                        precipitation_prob=hour_data.get("precipprob", 0),
+                        precipitation_mm=hour_data.get("precip", 0) * 25.4,  # inches to mm
+                        wind_speed=hour_data.get("windspeed", 0) * 1.609,  # mph to km/h
+                        humidity=hour_data.get("humidity", 50),
+                        pressure=1013,  # Not provided by VC
+                        cloud_cover=100 - hour_data.get("visibility", 10) * 10,  # Rough estimate
+                        visibility=hour_data.get("visibility", 10),
+                        source="visual-crossing"
+                    )
+                    forecasts.append(forecast)
             
-            logger.debug(f"Fetched {len(forecasts)} forecasts for {location.name} from OpenWeatherMap")
+            logger.debug(f"Visual Crossing: fetched {len(forecasts)} forecasts for {location.name}")
             return forecasts
             
         except Exception as e:
-            logger.error(f"OpenWeatherMap API error for {location.name}: {e}")
+            logger.warning(f"Visual Crossing error for {location.name}: {e}")
+            return []
+    
+    def _get_noaa_forecast(
+        self, 
+        location: LocationConfig, 
+        days: int
+    ) -> List[WeatherForecast]:
+        """Fetch forecast from NOAA (US only)."""
+        # Get gridpoint from coordinates
+        points_url = self.NOAA_API.format(lat=location.lat, lon=location.lon)
+        
+        try:
+            # Get gridpoint
+            points_resp = self.session.get(points_url, timeout=10)
+            points_resp.raise_for_status()
+            points_data = points_resp.json()
+            
+            # Get forecast URL
+            gridpoint = points_data.get("properties", {}).get("forecastGridData", "")
+            if not gridpoint:
+                return []
+            
+            # Get hourly forecast
+            forecast_resp = self.session.get(gridpoint, timeout=10)
+            forecast_resp.raise_for_status()
+            forecast_data = forecast_resp.json()
+            
+            forecasts = []
+            periods = forecast_data.get("properties", {}).get("temperature", {}).get("values", [])
+            
+            for period in periods[:days * 24]:  # Limit to requested days
+                ts = period.get("validTime", "")
+                if not ts:
+                    continue
+                
+                dt = datetime.fromisoformat(ts.split("/")[0])
+                temp = period.get("value")
+                if temp is None:
+                    continue
+                
+                # NOAA returns Celsius
+                forecast = WeatherForecast(
+                    location=location.name,
+                    timestamp=dt,
+                    temperature=temp,
+                    temperature_f=temp * 9/5 + 32,
+                    condition="Forecast",
+                    precipitation_prob=0,
+                    precipitation_mm=0,
+                    wind_speed=0,
+                    humidity=50,
+                    pressure=1013,
+                    cloud_cover=50,
+                    visibility=10,
+                    source="noaa"
+                )
+                forecasts.append(forecast)
+            
+            logger.debug(f"NOAA: fetched {len(forecasts)} forecasts for {location.name}")
+            return forecasts
+            
+        except Exception as e:
+            logger.warning(f"NOAA error for {location.name}: {e}")
             return []
     
     def _openmeteo_code_to_condition(self, code: int) -> str:
@@ -346,78 +443,18 @@ class WeatherClient:
         }
         return codes.get(code, "Unknown")
     
-    def get_current_conditions(self, location: LocationConfig) -> Optional[WeatherForecast]:
-        """Get current weather conditions."""
-        forecasts = self.get_forecast(location, days=1)
+    def get_single_api_forecast(
+        self, 
+        location: LocationConfig, 
+        api: str = "open-meteo"
+    ) -> Optional[WeatherForecast]:
+        """Get current conditions from a single API."""
+        forecasts = []
+        if api == "open-meteo":
+            forecasts = self._get_openmeteo_forecast(location, days=1)
+        elif api == "noaa" and self._is_us_location(location):
+            forecasts = self._get_noaa_forecast(location, days=1)
+        
         if forecasts:
             return forecasts[0]
         return None
-    
-    def analyze_precipitation_chance(
-        self, 
-        location: LocationConfig, 
-        date_range: tuple = None
-    ) -> Dict[str, Any]:
-        """
-        Analyze precipitation probability for a date range.
-        
-        Args:
-            location: Location to analyze
-            date_range: (start_date, end_date) tuple, defaults to next 7 days
-            
-        Returns:
-            Analysis dict with avg_prob, max_prob, rainy_hours, etc.
-        """
-        forecasts = self.get_forecast(location, days=7)
-        
-        if not forecasts:
-            return {"error": "No forecast data"}
-        
-        # Filter by date range if provided
-        if date_range:
-            start, end = date_range
-            forecasts = [
-                f for f in forecasts 
-                if start <= f.timestamp.date() <= end
-            ]
-        
-        if not forecasts:
-            return {"error": "No forecasts in date range"}
-        
-        precip_probs = [f.precipitation_prob for f in forecasts]
-        rainy_hours = [f for f in forecasts if f.precipitation_prob > 50]
-        
-        return {
-            "location": location.name,
-            "hours_analyzed": len(forecasts),
-            "avg_precipitation_prob": sum(precip_probs) / len(precip_probs),
-            "max_precipitation_prob": max(precip_probs),
-            "rainy_hours": len(rainy_hours),
-            "rainy_percentage": len(rainy_hours) / len(forecasts) * 100,
-            "total_precipitation_mm": sum(f.precipitation_mm for f in forecasts),
-            "forecasts": forecasts
-        }
-    
-    def analyze_temperature_range(
-        self,
-        location: LocationConfig,
-        date_range: tuple = None
-    ) -> Dict[str, Any]:
-        """Analyze temperature forecasts."""
-        forecasts = self.get_forecast(location, days=7)
-        
-        if not forecasts:
-            return {"error": "No forecast data"}
-        
-        temps = [f.temperature for f in forecasts]
-        temps_f = [f.temperature_f for f in forecasts]
-        
-        return {
-            "location": location.name,
-            "avg_temp_c": sum(temps) / len(temps),
-            "min_temp_c": min(temps),
-            "max_temp_c": max(temps),
-            "avg_temp_f": sum(temps_f) / len(temps_f),
-            "min_temp_f": min(temps_f),
-            "max_temp_f": max(temps_f),
-        }
