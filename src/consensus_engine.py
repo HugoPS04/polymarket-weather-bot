@@ -62,22 +62,43 @@ class ConsensusEngine:
     Analyzes weather data from multiple APIs to generate high-confidence trading signals.
     
     Strategy:
-    - Only trade when 2+ APIs agree (consensus)
-    - Minimum confidence threshold: 85%
-    - Focus on high-probability scenarios (85-99%)
+    - Only trade when APIs agree (consensus)
+    - Minimum confidence threshold
+    - Time-based rules: No new bets after 10am local on event day
     - Calculate edge based on consensus vs market price
     """
     
     # Confidence thresholds
-    MIN_CONFIDENCE = 0.60  # Minimum 60% confidence to consider (lowered)
+    MIN_CONFIDENCE = 0.60  # Minimum 60% confidence
     MIN_API_AGREEMENT = 2  # Minimum 2 APIs must agree
     
-    # Probability thresholds for trading (lowered for more opportunities)
+    # Probability thresholds
     HIGH_PROB_THRESHOLD = 0.70  # Trade on 70%+ predictions
     LOW_PROB_THRESHOLD = 0.30  # Trade on <30% predictions
     
-    # Minimum edge to consider a trade
+    # Minimum edge
     MIN_EDGE = 0.05  # 5% minimum edge
+    
+    # Time-based strategy
+    LOCAL_CUTOFF_HOUR = 10  # No new bets after 10am local time
+    MAX_DAYS_AHEAD = 2  # Allow betting up to 2 days ahead
+    
+    # US timezone mapping (simplified)
+    US_TIMEZONES = {
+        "miami": "America/New_York",
+        "newyork": "America/New_York",
+        "losangeles": "America/Los_Angeles",
+        "la": "America/Los_Angeles",
+        "seattle": "America/Los_Angeles",
+        "austin": "America/Chicago",
+        "houston": "America/Chicago",
+        "dallas": "America/Chicago",
+        "denver": "America/Denver",
+        "chicago": "America/Chicago",
+        "atlanta": "America/New_York",
+        "boston": "America/New_York",
+        "phoenix": "America/Phoenix",
+    }
     
     def __init__(self, settings: Optional[BotSettings] = None):
         self.settings = settings or get_settings()
@@ -99,6 +120,11 @@ class ConsensusEngine:
         """
         Analyze a market and generate a trading signal if confidence is high enough.
         
+        Time-based strategy:
+        - If market date is TODAY and local time > 10am: Skip new positions
+        - If market date is tomorrow or later: OK to enter
+        - Can close/exit positions anytime
+        
         Returns:
             TradingSignal if high confidence, None otherwise
         """
@@ -110,6 +136,15 @@ class ConsensusEngine:
             if debug:
                 logger.debug(f"No location match for: {market_question[:50]}...")
             return None
+        
+        # Check time-based strategy
+        target_date = self._extract_date(market_question)
+        if target_date:
+            time_check = self._check_time_strategy(location, target_date)
+            if time_check["skip_reason"]:
+                if debug:
+                    logger.debug(f"Skipping {location.name}: {time_check['skip_reason']}")
+                return None
         
         # Get consensus forecast
         consensus = self.weather_client.get_consensus_forecast(location, days=7)
@@ -130,6 +165,86 @@ class ConsensusEngine:
             )
         
         return None
+    
+    def _check_time_strategy(
+        self, 
+        location: LocationConfig, 
+        target_date
+    ) -> Dict[str, Any]:
+        """
+        Check if we should enter new positions based on time.
+        
+        Strategy:
+        - Event day = day 0
+        - No new bets after 10am local on event day
+        - Can bet on day+1 and day+2 (NOAA has great accuracy up to 48h)
+        - Can always close/exit positions anytime
+        
+        Returns:
+            Dict with 'can_enter', 'skip_reason', 'hours_remaining', 'days_ahead'
+        """
+        from datetime import date
+        
+        result = {
+            "can_enter": True,
+            "skip_reason": None,
+            "hours_remaining": 24,
+            "market_date": target_date,
+            "is_today": False,
+            "days_ahead": 0
+        }
+        
+        # Get timezone for location
+        tz = self._get_timezone(location.name)
+        
+        # Get current time in that timezone
+        try:
+            from zoneinfo import ZoneInfo
+            now_utc = datetime.now(ZoneInfo("UTC"))
+            now_local = now_utc.astimezone(ZoneInfo(tz))
+        except:
+            # Fallback if timezone not available
+            now_local = datetime.now()
+        
+        # Convert target_date to date if needed
+        if isinstance(target_date, datetime):
+            target_date_only = target_date.date()
+        else:
+            target_date_only = target_date
+        
+        # Check if market is for today
+        today = now_local.date()
+        result["is_today"] = (target_date_only == today)
+        
+        # Calculate days ahead
+        delta = (target_date_only - today).days
+        result["days_ahead"] = delta
+        
+        # Check if too far in future
+        if delta > self.MAX_DAYS_AHEAD:
+            result["can_enter"] = False
+            result["skip_reason"] = f"Market too far ahead ({delta} days > {self.MAX_DAYS_AHEAD})"
+        elif result["is_today"]:
+            # Event is TODAY - apply 10am cutoff
+            current_hour = now_local.hour
+            result["hours_remaining"] = max(0, 24 - current_hour)
+            
+            if current_hour >= self.LOCAL_CUTOFF_HOUR:
+                result["can_enter"] = False
+                result["skip_reason"] = (
+                    f"Past {self.LOCAL_CUTOFF_HOUR}am local time "
+                    f"({current_hour}:00), only {result['hours_remaining']}h remaining"
+                )
+        elif target_date_only < today:
+            result["can_enter"] = False
+            result["skip_reason"] = "Market date has passed"
+        
+        return result
+    
+    def _get_timezone(self, location_name: str) -> str:
+        """Get timezone for a location."""
+        name_lower = location_name.lower().replace(" ", "")
+        return self.US_TIMEZONES.get(name_lower, "America/New_York")
     
     def _analyze_precipitation_market(
         self,
@@ -258,27 +373,28 @@ class ConsensusEngine:
         temp_agreement = day_forecast.temp_agreement
         # Use the confidence from the forecast (already calculated correctly)
         confidence = day_forecast.confidence
+        temp_agreement = day_forecast.temp_agreement
         
-        # Calculate if condition is met
-        if comparison == ">":
-            condition_met = avg_temp > target_temp or max_temp > target_temp
-            model_prob = 0.85 if condition_met else 0.15
-        elif comparison == ">=":
-            condition_met = avg_temp >= target_temp or max_temp >= target_temp
-            model_prob = 0.85 if condition_met else 0.15
-        elif comparison == "<":
-            condition_met = avg_temp < target_temp or min_temp < target_temp
-            model_prob = 0.85 if condition_met else 0.15
-        elif comparison == "<=":
-            condition_met = avg_temp <= target_temp or min_temp <= target_temp
-            model_prob = 0.85 if condition_met else 0.15
-        elif comparison == "range":
-            low, high = target_temp
-            in_range = low <= avg_temp <= high or low <= max_temp <= high
-            model_prob = 0.85 if in_range else 0.15
-            target_temp = (low + high) / 2
+        # Calculate probability using proper model
+        # Calculate days ahead for uncertainty adjustment
+        today = datetime.now().date()
+        if isinstance(target_date, datetime):
+            target_date_only = target_date.date()
         else:
-            return None
+            target_date_only = target_date
+        days_ahead = max(0, (target_date_only - today).days)
+        
+        # Calculate probability using proper model
+        model_prob = self._calculate_temperature_probability(
+            avg_temp=avg_temp,
+            max_temp=max_temp,
+            min_temp=min_temp,
+            target_temp=target_temp,
+            comparison=comparison,
+            confidence=confidence,
+            temp_agreement=temp_agreement,
+            days_ahead=days_ahead
+        )
         
         # Find YES outcome (condition being true)
         yes_idx = self._find_outcome_index(outcomes, "yes")
@@ -296,7 +412,19 @@ class ConsensusEngine:
         if confidence < self.MIN_CONFIDENCE:
             return None
         
-        if abs(edge) < self.MIN_EDGE:  # Need at least MIN_EDGE% edge
+        # For very low probability events, require larger edge
+        min_edge_for_low_prob = self.MIN_EDGE
+        if model_prob < 0.20:
+            min_edge_for_low_prob = 0.10  # Require 10% edge for low prob events
+        elif model_prob < 0.30:
+            min_edge_for_low_prob = 0.08  # Require 8% edge
+        
+        # Increase edge requirement for further-ahead forecasts (more uncertainty)
+        # Day 0: 1x, Day 1: 1.25x, Day 2: 1.5x
+        days_ahead_factor = {0: 1.0, 1: 1.25, 2: 1.5}.get(days_ahead, 1.5)
+        min_edge_for_low_prob *= days_ahead_factor
+        
+        if abs(edge) < min_edge_for_low_prob:
             return None
         
         # Determine action based on model probability and edge direction
@@ -311,7 +439,7 @@ class ConsensusEngine:
         
         reasoning = (
             f"Forecast: avg {avg_temp:.0f}°F, max {max_temp:.0f}°F, min {min_temp:.0f}°F. "
-            f"APIs agree: {temp_agreement:.1%}. Target: {comparison} {target_temp:.0f}°F"
+            f"APIs agree: {temp_agreement:.1%}. Prob: {model_prob:.0%}. Target: {comparison} {target_temp if isinstance(target_temp, (int, float)) else target_temp[0] if isinstance(target_temp, tuple) else target_temp:.0f}°F"
         )
         
         return TradingSignal(
@@ -338,26 +466,40 @@ class ConsensusEngine:
     
     def _match_location(self, question: str) -> Optional[LocationConfig]:
         """Match market question to a monitored location."""
+        question_lower = question.lower()
+        
+        # Normalize question (remove spaces, lower case)
+        question_normalized = question_lower.replace(" ", "")
+        
         for loc in self.locations:
-            if loc.name.lower() in question:
+            # Direct match (case insensitive)
+            if loc.name.lower() in question_lower:
+                return loc
+            # Match without spaces (handles "LosAngeles" vs "Los Angeles")
+            if loc.name.lower().replace(" ", "") in question_normalized:
                 return loc
         
-        # Common aliases
+        # Common aliases (handle both with and without spaces)
         aliases = {
-            "miami": "Miami",
-            "new york": "NewYork",
-            "nyc": "NewYork",
-            "los angeles": "LA",
-            "la": "LA",
-            "chicago": "Chicago",
-            "houston": "Houston"
+            "miami": ["miami", "miami"],
+            "new york": ["newyork", "new york", "nyc"],
+            "los angeles": ["losangeles", "los angeles", "la"],
+            "chicago": ["chicago"],
+            "houston": ["houston"],
+            "seattle": ["seattle"],
+            "austin": ["austin"]
         }
         
-        for alias, loc_name in aliases.items():
-            if alias in question:
-                for loc in self.locations:
-                    if loc.name == loc_name:
-                        return loc
+        for loc in self.locations:
+            loc_lower = loc.name.lower().replace(" ", "")
+            
+            # Check if location name matches any alias
+            for city_name, alias_list in aliases.items():
+                if loc_lower in alias_list or city_name.replace(" ", "") in alias_list:
+                    # Check if any form of this city is in the question
+                    for alias in alias_list:
+                        if alias in question_lower or alias.replace(" ", "") in question_normalized:
+                            return loc
         
         return None
     
@@ -401,53 +543,244 @@ class ConsensusEngine:
         """
         question_lower = question.lower()
         
-        # Check if Fahrenheit or Celsius
-        is_fahrenheit = any(x in question_lower for x in ["fahrenheit", "°f", "f "])
+        # Check if Fahrenheit or Celsius - be more inclusive
+        is_fahrenheit = any(x in question_lower for x in ["fahrenheit", "°f", "°f", "fahreinheit"])
         
         # Look for range like "between 82-83°F"
-        range_match = re.search(r'between\s+(\d+)[-–](\d+)\s*°?[FfC]', question)
+        range_match = re.search(r'between\s+(\d+)[-–](\d+)\s*°?f', question, re.IGNORECASE)
         if range_match:
             low = int(range_match.group(1))
             high = int(range_match.group(2))
-            if is_fahrenheit:
+            # Check if it has °F or just F at the end
+            has_f_marker = re.search(r'\d+[-–]\d+\s*°?[Ff]', question)
+            is_range_fahrenheit = has_f_marker and ("°f" in question.lower() or question.lower().endswith("f"))
+            
+            if is_range_fahrenheit or "fahrenheit" in question_lower:
                 return ((low, high), "range", True)
             else:
+                # Celsius - convert to Fahrenheit for consistency
                 return ((low * 9/5 + 32, high * 9/5 + 32), "range", False)
         
         # Look for threshold like "> 82°F" or "82°F or higher"
         if ">=" in question or "or higher" in question or "at least" in question:
-            match = re.search(r'(\d+)\s*°?[FfC]', question)
+            match = re.search(r'(\d+)\s*°?f', question, re.IGNORECASE)
             if match:
                 temp = int(match.group(1))
-                if not is_fahrenheit:
+                # Check if Fahrenheit
+                is_f = "°f" in question.lower() or question.lower().endswith("f") or "fahrenheit" in question_lower
+                if not is_f:
                     temp = temp * 9/5 + 32
+                    is_fahrenheit = False
+                else:
+                    is_fahrenheit = True
                 return (temp, ">=", is_fahrenheit)
         
         if ">" in question or "above" in question or "over" in question:
-            match = re.search(r'(\d+)\s*°?[FfC]', question)
+            match = re.search(r'(\d+)\s*°?f', question, re.IGNORECASE)
             if match:
                 temp = int(match.group(1))
-                if not is_fahrenheit:
+                is_f = "°f" in question.lower() or question.lower().endswith("f") or "fahrenheit" in question_lower
+                if not is_f:
                     temp = temp * 9/5 + 32
+                    is_fahrenheit = False
+                else:
+                    is_fahrenheit = True
                 return (temp, ">", is_fahrenheit)
         
         if "<=" in question or "or lower" in question or "at most" in question:
-            match = re.search(r'(\d+)\s*°?[FfC]', question)
+            match = re.search(r'(\d+)\s*°?f', question, re.IGNORECASE)
             if match:
                 temp = int(match.group(1))
-                if not is_fahrenheit:
+                is_f = "°f" in question.lower() or question.lower().endswith("f") or "fahrenheit" in question_lower
+                if not is_f:
                     temp = temp * 9/5 + 32
+                    is_fahrenheit = False
+                else:
+                    is_fahrenheit = True
                 return (temp, "<=", is_fahrenheit)
         
         if "<" in question or "below" in question or "under" in question:
-            match = re.search(r'(\d+)\s*°?[FfC]', question)
+            match = re.search(r'(\d+)\s*°?f', question, re.IGNORECASE)
             if match:
                 temp = int(match.group(1))
-                if not is_fahrenheit:
+                is_f = "°f" in question.lower() or question.lower().endswith("f") or "fahrenheit" in question_lower
+                if not is_f:
                     temp = temp * 9/5 + 32
+                    is_fahrenheit = False
+                else:
+                    is_fahrenheit = True
                 return (temp, "<", is_fahrenheit)
         
         return None
+    
+    def _calculate_temperature_probability(
+        self,
+        avg_temp: float,
+        max_temp: float,
+        min_temp: float,
+        target_temp: Any,
+        comparison: str,
+        confidence: float,
+        temp_agreement: float,
+        days_ahead: int = 0
+    ) -> float:
+        """
+        Calculate temperature probability using proper model.
+        
+        This uses a more nuanced approach than binary 15%/85%:
+        - Factors in where the forecast falls in the range
+        - Accounts for forecast uncertainty based on API agreement
+        - Accounts for NOAA's decreasing accuracy further ahead
+        - Uses gradual probability curves, not binary outcomes
+        
+        Args:
+            avg_temp: Average temperature across sources
+            max_temp: Maximum temperature across sources
+            min_temp: Minimum temperature across sources
+            target_temp: Target temperature (int for thresholds, tuple for range)
+            comparison: Type of comparison (">", ">=", "<", "<=", "range")
+            confidence: Overall confidence in the forecast (0-1)
+            temp_agreement: How much APIs agree (0-1)
+            days_ahead: Days until event (affects uncertainty)
+            
+        Returns:
+            Probability (0-1)
+        """
+        import math
+        
+        # Base uncertainty - weather forecasts typically have ±2-3°F error
+        # This decreases as API agreement increases
+        base_uncertainty = 2.0  # degrees Fahrenheit
+        
+        # NOAA accuracy degrades with distance:
+        # Day 0: ±2°F, Day 1: ±3°F, Day 2: ±4-5°F
+        noaa_uncertainty_by_day = {0: 2.0, 1: 3.0, 2: 4.5}
+        noaa_uncertainty = noaa_uncertainty_by_day.get(days_ahead, 5.0)
+        
+        # Combine API agreement uncertainty with NOAA forecast uncertainty
+        api_uncertainty = base_uncertainty * (1 - temp_agreement * 0.5)  # 1.0 to 2.0 degrees
+        uncertainty = max(api_uncertainty, noaa_uncertainty)  # Use the larger
+        
+        if comparison == "range":
+            low, high = target_temp
+            range_center = (low + high) / 2
+            range_half_width = (high - low) / 2
+            
+            # The forecast high is our best estimate of the daily high
+            forecast_high = max_temp
+            
+            # Calculate where the forecast falls relative to the range
+            # Distance from forecast to range center
+            distance_from_center = abs(forecast_high - range_center)
+            
+            # If forecast is inside range, probability is high
+            # If forecast is outside range, probability decreases with distance
+            
+            if low <= forecast_high <= high:
+                # Inside range - high probability
+                # But reduce if forecast is near boundary (less margin for error)
+                distance_to_nearest_boundary = min(forecast_high - low, high - forecast_high)
+                
+                # Base probability: 0.75-0.90 depending on how centered the forecast is
+                center_score = 1 - (distance_from_center / range_half_width) if range_half_width > 0 else 1
+                base_prob = 0.75 + 0.15 * center_score
+                
+                # Reduce probability if near boundary (less margin for error)
+                boundary_margin = distance_to_nearest_boundary / uncertainty
+                boundary_factor = min(1.0, boundary_margin)
+                
+                model_prob = base_prob * (0.7 + 0.3 * boundary_factor)
+                
+            else:
+                # Outside range - calculate probability based on distance
+                # If forecast is just outside, there's still some chance
+                if forecast_high < low:
+                    distance_outside = low - forecast_high
+                else:
+                    distance_outside = forecast_high - high
+                
+                # Probability decreases as distance outside range increases
+                # Using a gaussian-like falloff
+                sigma = uncertainty  # Standard deviation based on forecast uncertainty
+                probability_falloff = math.exp(-(distance_outside ** 2) / (2 * sigma ** 2))
+                model_prob = 0.15 * probability_falloff
+            
+            return max(0.05, min(0.95, model_prob))
+        
+        elif comparison == ">=":
+            # Will temperature be >= threshold?
+            threshold = target_temp
+            forecast_high = max_temp
+            
+            if forecast_high >= threshold:
+                # Forecast is above threshold
+                distance_above = forecast_high - threshold
+                # Higher = more confident
+                confidence_boost = min(0.15, distance_above / 10)
+                model_prob = 0.80 + confidence_boost
+            else:
+                # Forecast is below threshold
+                distance_below = threshold - forecast_high
+                # Probability decreases with distance
+                sigma = uncertainty
+                probability_falloff = math.exp(-(distance_below ** 2) / (2 * sigma ** 2))
+                model_prob = 0.20 * probability_falloff
+            
+            return max(0.05, min(0.95, model_prob))
+        
+        elif comparison == ">":
+            # Will temperature be > threshold? (strictly greater)
+            threshold = target_temp
+            forecast_high = max_temp
+            
+            if forecast_high > threshold:
+                distance_above = forecast_high - threshold
+                confidence_boost = min(0.15, distance_above / 10)
+                model_prob = 0.75 + confidence_boost
+            else:
+                distance_below = threshold - forecast_high + 0.1  # Small buffer for strict >
+                sigma = uncertainty
+                probability_falloff = math.exp(-(distance_below ** 2) / (2 * sigma ** 2))
+                model_prob = 0.15 * probability_falloff
+            
+            return max(0.05, min(0.95, model_prob))
+        
+        elif comparison == "<=":
+            # Will temperature be <= threshold?
+            threshold = target_temp
+            forecast_high = max_temp
+            
+            if forecast_high <= threshold:
+                distance_below = threshold - forecast_high
+                confidence_boost = min(0.15, distance_below / 10)
+                model_prob = 0.80 + confidence_boost
+            else:
+                distance_above = forecast_high - threshold
+                sigma = uncertainty
+                probability_falloff = math.exp(-(distance_above ** 2) / (2 * sigma ** 2))
+                model_prob = 0.20 * probability_falloff
+            
+            return max(0.05, min(0.95, model_prob))
+        
+        elif comparison == "<":
+            # Will temperature be < threshold? (strictly less)
+            threshold = target_temp
+            forecast_high = max_temp
+            
+            if forecast_high < threshold:
+                distance_below = threshold - forecast_high
+                confidence_boost = min(0.15, distance_below / 10)
+                model_prob = 0.75 + confidence_boost
+            else:
+                distance_above = forecast_high - threshold + 0.1
+                sigma = uncertainty
+                probability_falloff = math.exp(-(distance_above ** 2) / (2 * sigma ** 2))
+                model_prob = 0.15 * probability_falloff
+            
+            return max(0.05, min(0.95, model_prob))
+        
+        else:
+            return 0.50  # Default to 50% if unknown comparison
     
     def _find_outcome_index(self, outcomes: List[str], target: str) -> Optional[int]:
         """Find index of outcome (case-insensitive)."""

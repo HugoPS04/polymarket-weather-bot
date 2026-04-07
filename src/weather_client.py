@@ -133,27 +133,41 @@ class WeatherClient:
         location: LocationConfig, 
         days: int
     ) -> List[WeatherForecast]:
-        """Fetch forecasts from all available APIs."""
+        """
+        Fetch forecasts from available APIs.
+        
+        US locations: NOAA only (no fallback)
+        Non-US locations: Open-Meteo + Visual Crossing
+        """
         all_forecasts = []
         
-        # Open-Meteo (always available, free)
-        openmeteo = self._get_openmeteo_forecast(location, days)
-        all_forecasts.extend(openmeteo)
-        
-        # Visual Crossing (free tier)
-        try:
-            visual_crossing = self._get_visual_crossing_forecast(location, days)
-            all_forecasts.extend(visual_crossing)
-        except Exception as e:
-            logger.warning(f"Visual Crossing failed: {e}")
-        
-        # NOAA (US only, try if lat/lon looks like US)
+        # US locations: NOAA ONLY (no fallback)
         if self._is_us_location(location):
             try:
                 noaa = self._get_noaa_forecast(location, days)
-                all_forecasts.extend(noaa)
+                if noaa:
+                    all_forecasts.extend(noaa)
+                    logger.debug(f"NOAA returned {len(noaa)} forecasts for {location.name}")
+                else:
+                    logger.warning(f"NOAA returned no data for {location.name}")
             except Exception as e:
-                logger.warning(f"NOAA failed: {e}")
+                logger.warning(f"NOAA failed for {location.name}: {e}")
+                # NO FALLBACK - if NOAA fails, no data for US locations
+        else:
+            # Non-US: Open-Meteo + Visual Crossing
+            try:
+                openmeteo = self._get_openmeteo_forecast(location, days)
+                if openmeteo:
+                    all_forecasts.extend(openmeteo)
+            except Exception as e:
+                logger.warning(f"Open-Meteo failed for {location.name}: {e}")
+            
+            try:
+                visual_crossing = self._get_visual_crossing_forecast(location, days)
+                if visual_crossing:
+                    all_forecasts.extend(visual_crossing)
+            except Exception as e:
+                logger.warning(f"Visual Crossing failed: {e}")
         
         return all_forecasts
     
@@ -180,9 +194,16 @@ class WeatherClient:
         # This prevents low precip agreement from hurting temp market confidence
         best_agreement = max(temp_agreement, precip_agreement)
         
-        # With 2+ APIs agreeing: full weight, with 1 API: reduced confidence
-        api_factor = min(1.0, api_count / 2)
-        confidence = best_agreement * api_factor
+        # For single-API cases (like NOAA-only US), use agreement directly
+        # NOAA is a reliable source, so we trust its hourly consistency
+        if api_count >= 2:
+            # Multiple APIs: require agreement between them
+            api_factor = min(1.0, api_count / 2)
+            confidence = best_agreement * api_factor
+        else:
+            # Single API (NOAA): use hourly agreement directly
+            # High temp_agreement means NOAA is consistent across hours
+            confidence = temp_agreement
         
         return ConsensusForecast(
             location=location_name,

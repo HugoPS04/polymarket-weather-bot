@@ -133,13 +133,27 @@ class MarketScanner:
                 except:
                     clob_token_ids = []
             
+            # Parse outcomes - can be string or list
+            outcomes_data = data.get("outcomes", [])
+            if isinstance(outcomes_data, list):
+                outcomes = outcomes_data
+            elif isinstance(outcomes_data, str):
+                # Parse string like "[\"Yes\",\"No\"]"
+                import json
+                try:
+                    outcomes = json.loads(outcomes_data)
+                except:
+                    outcomes = []
+            else:
+                outcomes = []
+            
             return Market(
                 question=data.get("question", "Unknown"),
                 slug=data.get("slug", ""),
                 market_address=data.get("address", ""),
                 condition_id=data.get("conditionId", ""),
                 clob_token_ids=clob_token_ids,
-                outcomes=data.get("outcomes", []),
+                outcomes=outcomes,
                 outcome_prices=outcome_prices,
                 volume=float(data.get("volume", 0)),
                 liquidity=float(data.get("liquidity", 0)),
