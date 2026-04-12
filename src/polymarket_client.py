@@ -61,6 +61,38 @@ class PolymarketClient:
             logger.error(f"Failed to initialize Polymarket client: {e}")
             raise
     
+    def approve_usdc(self, amount: float = 1000000) -> Dict:
+        """
+        Approve CLOB contract to spend USDC.
+        Must be called before placing orders.
+        
+        Args:
+            amount: Amount to approve (default 1M, large number for convenience)
+            
+        Returns:
+            Approval transaction result
+        """
+        if not self._initialized:
+            self.initialize()
+        
+        logger.info(f"Approving USDC spending for CLOB contract...")
+        try:
+            # Check if already approved
+            allowance = self.client.get_allowance()
+            if allowance and allowance.get("allowance", 0) > 0:
+                logger.info(f"Already approved. Current allowance: {allowance}")
+                return allowance
+            
+            # Approve USDC spending
+            result = self.client.approve(amount)
+            logger.info(f"Approval result: {result}")
+            return result
+        except Exception as e:
+            logger.error(f"Approval failed: {e}")
+            return {"error": str(e)}
+            logger.error(f"Failed to initialize Polymarket client: {e}")
+            raise
+    
     def get_balance(self) -> Dict[str, Any]:
         """Get USDC balance."""
         if not self._initialized:
