@@ -70,9 +70,12 @@ class PolymarketClient:
         try:
             params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
             result = self.client.get_balance_allowance(params)
+            # USDC has 6 decimals, convert from smallest unit
+            balance = float(result.get("balance", 0)) / 1_000_000
+            allowance = float(result.get("allowance", 0)) / 1_000_000
             return {
-                "usdc": float(result.get("balance", 0)),
-                "allowance": float(result.get("allowance", 0)),
+                "usdc": balance,
+                "allowance": allowance,
                 "raw": result
             }
         except Exception as e:
