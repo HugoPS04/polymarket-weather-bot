@@ -66,11 +66,19 @@ class PolymarketClient:
         if not self._initialized:
             self.initialize()
         try:
-            # Try new method name
-            return self.client.get_balance()
-        except AttributeError:
-            # Fallback to older API
-            return {"usdc": 0}
+            # Try common balance methods
+            if hasattr(self.client, 'get_funding_balance'):
+                return self.client.get_funding_balance()
+            elif hasattr(self.client, 'get_usdc_balance'):
+                return self.client.get_usdc_balance()
+            elif hasattr(self.client, 'get_balance'):
+                return self.client.get_balance()
+            else:
+                # Try direct API call
+                return {"usdc": 0}
+        except Exception as e:
+            logger.warning(f"Balance check failed: {e}")
+            return {"usdc": 0, "error": str(e)}
     
     def get_positions(self, market: Optional[str] = None) -> List[Dict]:
         """
