@@ -10,7 +10,8 @@ from py_clob_client.clob_types import (
     OrderType, 
     MarketOrderArgs,
     BookParams,
-    DropNotificationParams
+    DropNotificationParams,
+    BalanceAllowanceParams
 )
 from py_clob_client.order_builder.constants import BUY, SELL
 
@@ -61,56 +62,21 @@ class PolymarketClient:
             logger.error(f"Failed to initialize Polymarket client: {e}")
             raise
     
-    def approve_usdc(self, amount: float = 1000000) -> Dict:
-        """
-        Approve CLOB contract to spend USDC.
-        Must be called before placing orders.
-        
-        Args:
-            amount: Amount to approve (default 1M, large number for convenience)
-            
-        Returns:
-            Approval transaction result
-        """
-        if not self._initialized:
-            self.initialize()
-        
-        logger.info(f"Approving USDC spending for CLOB contract...")
-        try:
-            # Check if already approved
-            allowance = self.client.get_allowance()
-            if allowance and allowance.get("allowance", 0) > 0:
-                logger.info(f"Already approved. Current allowance: {allowance}")
-                return allowance
-            
-            # Approve USDC spending
-            result = self.client.approve(amount)
-            logger.info(f"Approval result: {result}")
-            return result
-        except Exception as e:
-            logger.error(f"Approval failed: {e}")
-            return {"error": str(e)}
-            logger.error(f"Failed to initialize Polymarket client: {e}")
-            raise
-    
     def get_balance(self) -> Dict[str, Any]:
-        """Get USDC balance."""
+        """Get USDC balance and allowance."""
         if not self._initialized:
             self.initialize()
         try:
-            # Try common balance methods
-            if hasattr(self.client, 'get_funding_balance'):
-                return self.client.get_funding_balance()
-            elif hasattr(self.client, 'get_usdc_balance'):
-                return self.client.get_usdc_balance()
-            elif hasattr(self.client, 'get_balance'):
-                return self.client.get_balance()
-            else:
-                # Try direct API call
-                return {"usdc": 0}
+            params = BalanceAllowanceParams()
+            result = self.client.get_balance_allowance(params)
+            return {
+                "usdc": float(result.get("balance", 0)),
+                "allowance": float(result.get("allowance", 0)),
+                "raw": result
+            }
         except Exception as e:
             logger.warning(f"Balance check failed: {e}")
-            return {"usdc": 0, "error": str(e)}
+            return {"usdc": 0, "allowance": 0, "error": str(e)}
     
     def get_positions(self, market: Optional[str] = None) -> List[Dict]:
         """
@@ -125,8 +91,10 @@ class PolymarketClient:
         if not self._initialized:
             self.initialize()
         try:
-            return self.client.get_positions(market=market)
-        except AttributeError:
+            positions = self.client.get_positions(market=market)
+            return positions if positions else []
+        except Exception as e:
+            logger.warning(f"Positions check failed: {e}")
             return []
     
     def get_order_book(self, token_id: str) -> Dict:
@@ -219,7 +187,7 @@ class PolymarketClient:
         order_type: str = "FOK"
     ) -> Dict:
         """
-        Place a market order ( Fill or Kill by default).
+        Place a market order (Fill or Kill by default).
         
         Args:
             token_id: Outcome token ID
