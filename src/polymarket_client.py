@@ -11,7 +11,8 @@ from py_clob_client.clob_types import (
     MarketOrderArgs,
     BookParams,
     DropNotificationParams,
-    BalanceAllowanceParams
+    BalanceAllowanceParams,
+    AssetType
 )
 from py_clob_client.order_builder.constants import BUY, SELL
 
@@ -67,7 +68,7 @@ class PolymarketClient:
         if not self._initialized:
             self.initialize()
         try:
-            params = BalanceAllowanceParams()
+            params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
             result = self.client.get_balance_allowance(params)
             return {
                 "usdc": float(result.get("balance", 0)),
