@@ -84,7 +84,7 @@ class PolymarketClient:
     
     def get_positions(self, market: Optional[str] = None) -> List[Dict]:
         """
-        Get current positions.
+        Get current positions (aggregated from trades).
         
         Args:
             market: Optional market address to filter positions
@@ -95,10 +95,53 @@ class PolymarketClient:
         if not self._initialized:
             self.initialize()
         try:
-            positions = self.client.get_positions(market=market)
-            return positions if positions else []
+            # Get trades to calculate positions
+            trades = self.client.get_trades()
+            if not trades:
+                return []
+            
+            # Aggregate trades by market/asset
+            positions = {}
+            for trade in trades:
+                asset_id = trade.get("asset_id")
+                if asset_id and asset_id not in positions:
+                    positions[asset_id] = {
+                        "asset_id": asset_id,
+                        "outcome": trade.get("outcome", "Unknown"),
+                        "side": trade.get("side"),
+                        "size": 0,
+                        "avg_price": 0,
+                        "total_cost": 0,
+                        "trades": []
+                    }
+                
+                size = float(trade.get("size", 0))
+                price = float(trade.get("price", 0))
+                
+                positions[asset_id]["size"] += size
+                positions[asset_id]["total_cost"] += size * price
+                positions[asset_id]["trades"].append(trade)
+            
+            # Calculate average price
+            for asset_id, pos in positions.items():
+                if pos["size"] > 0:
+                    pos["avg_price"] = pos["total_cost"] / pos["size"]
+                del pos["trades"]  # Remove trade details for cleaner output
+            
+            return list(positions.values())
         except Exception as e:
             logger.warning(f"Positions check failed: {e}")
+            return []
+    
+    def get_trades(self) -> List[Dict]:
+        """Get trade history."""
+        if not self._initialized:
+            self.initialize()
+        try:
+            trades = self.client.get_trades()
+            return trades if trades else []
+        except Exception as e:
+            logger.warning(f"Trades check failed: {e}")
             return []
     
     def get_order_book(self, token_id: str) -> Dict:
