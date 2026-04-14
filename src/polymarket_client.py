@@ -289,6 +289,103 @@ class PolymarketClient:
             self.initialize()
         return self.client.get_orders(market=market)
     
+    def get_markets_status(self, market_addresses: List[str]) -> Dict[str, Dict]:
+        """
+        Get resolution status of multiple markets.
+        
+        Args:
+            market_addresses: List of market addresses to check
+            
+        Returns:
+            Dict mapping market_address -> status info
+        """
+        if not self._initialized:
+            self.initialize()
+        
+        results = {}
+        for addr in market_addresses:
+            try:
+                # Get market info
+                market_info = self.client.get_markets(market_addresses=[addr])
+                if market_info:
+                    results[addr] = {
+                        "resolved": market_info[0].get("closed", False),
+                        "winner": market_info[0].get("question", ""),
+                        "Answer": market_info[0].get("answer", "")
+                    }
+            except Exception as e:
+                logger.warning(f"Failed to get status for {addr}: {e}")
+                results[addr] = {"error": str(e)}
+        
+        return results
+    
+    def settle_market(self, market_address: str) -> Dict:
+        """
+        Settle a resolved market and claim winnings.
+        
+        Args:
+            market_address: Address of the resolved market
+            
+        Returns:
+            Settlement result
+        """
+        if not self._initialized:
+            self.initialize()
+        
+        logger.info(f"Settling market: {market_address}")
+        try:
+            result = self.client.settle(market_address)
+            logger.info(f"Settlement result: {result}")
+            return result
+        except Exception as e:
+            logger.error(f"Settlement failed: {e}")
+            return {"error": str(e)}
+    
+    def merge_tokens(self, token_ids: List[str]) -> Dict:
+        """
+        Merge multiple outcome tokens into a single position.
+        Used when you hold YES and NO tokens on same market (arbitrage).
+        
+        Args:
+            token_ids: List of token IDs to merge
+            
+        Returns:
+            Merge result
+        """
+        if not self._initialized:
+            self.initialize()
+        
+        logger.info(f"Merging tokens: {token_ids}")
+        try:
+            result = self.client.merge_positions(token_ids)
+            logger.info(f"Merge result: {result}")
+            return result
+        except Exception as e:
+            logger.error(f"Token merge failed: {e}")
+            return {"error": str(e)}
+    
+    def claim_rewards(self, market_address: str) -> Dict:
+        """
+        Claim any outstanding rewards from a resolved market.
+        
+        Args:
+            market_address: Address of the resolved market
+            
+        Returns:
+            Claim result
+        """
+        if not self._initialized:
+            self.initialize()
+        
+        logger.info(f"Claiming rewards for market: {market_address}")
+        try:
+            result = self.client.claim_rewards(market_address)
+            logger.info(f"Claim result: {result}")
+            return result
+        except Exception as e:
+            logger.error(f"Claim failed: {e}")
+            return {"error": str(e)}
+    
     def is_initialized(self) -> bool:
         """Check if client is initialized."""
         return self._initialized

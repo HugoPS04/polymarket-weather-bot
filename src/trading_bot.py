@@ -268,9 +268,104 @@ class WeatherTradingBot:
         return sum(pos.get("size", 0) for pos in self.positions.values())
     
     def _manage_positions(self) -> None:
-        """Manage existing positions."""
-        # TODO: Implement take profit / stop loss
-        pass
+        """Manage existing positions - check settlements and claims."""
+        if not self.positions:
+            return
+        
+        logger.info(f"Checking {len(self.positions)} positions for settlement...")
+        
+        # Get market addresses to check
+        market_addresses = list(self.positions.keys())
+        
+        try:
+            # Check market resolution statuses
+            statuses = self.poly_client.get_markets_status(market_addresses)
+            
+            for market_addr, status in statuses.items():
+                if status.get("error"):
+                    continue
+                
+                if status.get("resolved"):
+                    logger.info(f"Market resolved: {market_addr}")
+                    logger.info(f"  Winner: {status.get('answer', 'Unknown')}")
+                    
+                    # Get our position on this market
+                    position = self.positions.get(market_addr, {})
+                    our_outcome = position.get("outcome", "")
+                    
+                    # Check if we won
+                    if our_outcome.lower() == status.get("answer", "").lower():
+                        logger.info(f"  We WON! Claiming rewards...")
+                        result = self.poly_client.claim_rewards(market_addr)
+                        logger.info(f"  Claim result: {result}")
+                    else:
+                        logger.info(f"  We lost this one")
+                    
+                    # Settle the market
+                    settle_result = self.poly_client.settle_market(market_addr)
+                    logger.info(f"  Settlement: {settle_result}")
+                    
+                    # Remove from active positions
+                    del self.positions[market_addr]
+                    self._save_positions()
+                    
+        except Exception as e:
+            logger.error(f"Position management error: {e}")
+    
+    def check_and_settle_all(self) -> Dict[str, Any]:
+        """
+        Check all positions and settle any resolved markets.
+        Run this periodically or on startup.
+        """
+        results = {
+            "positions_checked": len(self.positions),
+            "settled": [],
+            "claimed": [],
+            "errors": []
+        }
+        
+        if not self.positions:
+            logger.info("No positions to check")
+            return results
+        
+        # Get market statuses
+        market_addresses = list(self.positions.keys())
+        
+        try:
+            statuses = self.poly_client.get_markets_status(market_addresses)
+            
+            for market_addr, status in statuses.items():
+                if status.get("error"):
+                    results["errors"].append({"market": market_addr, "error": status["error"]})
+                    continue
+                
+                if status.get("resolved"):
+                    position = self.positions.get(market_addr, {})
+                    
+                    # Claim rewards
+                    if position:
+                        claim_result = self.poly_client.claim_rewards(market_addr)
+                        if not claim_result.get("error"):
+                            results["claimed"].append({
+                                "market": market_addr,
+                                "outcome": position.get("outcome"),
+                                "size": position.get("size")
+                            })
+                    
+                    # Settle
+                    settle_result = self.poly_client.settle_market(market_addr)
+                    results["settled"].append({"market": market_addr})
+                    
+                    # Remove from tracking
+                    if market_addr in self.positions:
+                        del self.positions[market_addr]
+                    
+        except Exception as e:
+            logger.error(f"Settle all error: {e}")
+            results["errors"].append(str(e))
+        
+        self._save_positions()
+        return results
     
     def _load_positions(self) -> None:
         """Load positions from disk."""
