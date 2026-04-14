@@ -307,8 +307,62 @@ class WeatherTradingBot:
             logger.error(f"Exit order failed: {e}")
     
     def _calculate_position_size(self, signal: TradingSignal) -> float:
-        """Calculate position size based on signal."""
-        return self.settings.max_position_size * signal.bet_size_recommendation
+        """Calculate position size using Kelly Criterion.
+        
+        Kelly Formula: f* = (bp - q) / b
+        Where:
+        - b = odds received (price / (1 - price))
+        - p = probability of winning (our model probability)
+        - q = probability of losing (1 - p)
+        
+        We apply a safety fraction (typically 0.25) to reduce volatility.
+        """
+        # Get parameters
+        kelly_enabled = getattr(self.settings, 'kelly_enabled', True)
+        kelly_fraction = getattr(self.settings, 'kelly_fraction', 0.25)
+        kelly_min = getattr(self.settings, 'kelly_min_bet', 0.5)
+        kelly_max = getattr(self.settings, 'kelly_max_bet', 10)
+        
+        if not kelly_enabled:
+            # Fallback to simple confidence-based sizing
+            return self.settings.max_position_size * signal.bet_size_recommendation
+        
+        # Our probability estimate
+        p = signal.model_probability
+        
+        # Market implied probability (1 / odds)
+        # Price is in format like 0.10 = 10% = odds of 9x
+        if signal.market_price <= 0:
+            return kelly_min
+        
+        # Calculate b (odds received)
+        b = (1 / signal.market_price) - 1  # If price=0.10, b=9 (bet 1 win 9)
+        
+        # q = probability of losing
+        q = 1 - p
+        
+        # Full Kelly
+        if b <= 0:
+            kelly_bet = kelly_min
+        else:
+            kelly = (b * p - q) / b
+            kelly_bet = kelly * kelly_fraction
+        
+        # Convert to dollar amount based on max position
+        dollar_bet = kelly_bet * self.settings.max_position_size
+        
+        # Apply bounds
+        dollar_bet = max(kelly_min, min(kelly_max, dollar_bet))
+        
+        # Ensure we don't exceed remaining exposure
+        current_exposure = self._get_total_exposure()
+        max_allowed = self.settings.max_total_exposure - current_exposure
+        dollar_bet = min(dollar_bet, max_allowed)
+        
+        logger.info(f"Kelly calculation: p={p:.0%}, b={b:.2f}, Kelly={kelly:.2%}, "
+                    f"fraction={kelly_fraction}, bet=${dollar_bet:.2f}")
+        
+        return dollar_bet
     
     def _track_signal_position(
         self, 
