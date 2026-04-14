@@ -73,6 +73,9 @@ class WeatherTradingBot:
         self.ws_monitor = WebSocketPriceMonitor(self.settings)
         self.ws_monitor.add_price_alert(self._on_price_update)
         
+        # Initialize exit manager
+        self.exit_manager = ExitManager(self.settings)
+        
         # Load existing positions
         self._load_positions()
         
@@ -227,6 +230,50 @@ class WeatherTradingBot:
                 
             except Exception as e:
                 logger.error(f"Trade execution failed: {e}")
+    
+    def _check_exits(self) -> None:
+        """Check for exit signals on open positions."""
+        # Get current prices from live_prices
+        prices = {
+            token_id: price 
+            for token_id, price in self.live_prices.items()
+        }
+        
+        # Also get prices from market scanner
+        for signal in self.signals:
+            prices[signal.market_address] = signal.market_price
+        
+        # Check for exits
+        exit_signals = self.exit_manager.check_positions(prices)
+        
+        for signal in exit_signals:
+            logger.info(f"EXIT SIGNAL: {signal['reason']}")
+            logger.info(f"  Market: {signal['market_address'][:30]}...")
+            logger.info(f"  Exit amount: ${signal['exit_amount']:.2f}")
+            logger.info(f"  Current price: ${signal['current_price']:.2f} (entry: ${signal['entry_price']:.2f})")
+            logger.info(f"  P&L: {signal['pnl_pct']:.1%}")
+            
+            if self.settings.live_trading:
+                # Execute exit
+                self._execute_exit(signal)
+    
+    def _execute_exit(self, exit_signal: Dict) -> None:
+        """Execute an exit order."""
+        try:
+            response = self.poly_client.place_limit_order(
+                token_id=exit_signal['token_id'],
+                price=exit_signal['current_price'],
+                size=exit_signal['exit_amount'],
+                side="SELL",
+                order_type="FOK"
+            )
+            logger.info(f"Exit order placed: {response.get('orderID', 'N/A')}")
+        except Exception as e:
+            logger.error(f"Exit order failed: {e}")
+    
+    def _calculate_position_size(self, signal: TradingSignal) -> float:
+        """Calculate position size based on signal."""
+        return self.settings.max_position_size * signal.bet_size_recommendation
     
     def _track_signal_position(
         self, 
