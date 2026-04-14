@@ -22,6 +22,9 @@ from config.settings import get_settings
 from src.trading_bot import WeatherTradingBot
 from src.polymarket_client import PolymarketClient
 from src.market_scanner import MarketScanner
+from src.safety_manager import SafetyManager, IntelligentLogger, SafetyState
+
+[181 more lines in file. Use offset=19 to continue.
 
 
 def setup_logging(settings):
@@ -97,14 +100,93 @@ async def cmd_run_async(args):
 
 
 def cmd_run(args):
-    """Run the trading bot."""
+    """Run the trading bot with safety features."""
+    log = IntelligentLogger("PolymarketBot")
+    
+    # Initialize safety manager
+    safety = SafetyManager()
+    
+    # Check if can trade
+    can_trade, reason = safety.can_trade()
+    if not can_trade:
+        log.error(f"Cannot start: {reason}")
+        log.warning("Run 'python main.py resume' to clear emergency stop")
+        return
+    
+    log.banner("Polymarket Weather Trading Bot")
+    log.success("Safety checks passed")
+    
     if args.debug:
         logging.getLogger().setLevel(logging.DEBUG)
+    
+    settings = get_settings()
+    
+    log.section("Configuration")
+    log.item("Live trading", settings.live_trading)
+    log.item("Check interval", f"{settings.check_interval}s")
+    log.item("Max position", f"${settings.max_position_size}")
+    log.item("Min edge", f"{settings.min_edge_threshold:.0%}")
     
     if args.websocket:
         asyncio.run(cmd_run_async(args))
     else:
         asyncio.run(cmd_run_async(args))
+
+
+def cmd_emergency_stop(args):
+    """Trigger emergency stop."""
+    log = IntelligentLogger()
+    safety = SafetyManager()
+    
+    log.warning("EMERGENCY STOP TRIGGERED")
+    log.item("Running", SafetyState().running)
+    
+    if args.clear:
+        SafetyManager.clear_emergency_stop()
+        log.success("Emergency stop cleared")
+    else:
+        log.warning("Run 'python main.py emergency-stop --clear' to resume")
+
+
+def cmd_resume(args):
+    """Resume trading after emergency stop."""
+    log = IntelligentLogger()
+    safety = SafetyManager()
+    
+    if safety.resume():
+        log.success("Trading resumed - safe to run 'python main.py run'")
+    else:
+        log.error("Cannot resume - remove emergency stop file first")
+        log.item("Command", "rm data/EMERGENCY_STOP")
+
+
+def cmd_status(args):
+    """Check bot status including safety state."""
+    log = IntelligentLogger()
+    safety = SafetyManager()
+    
+    status = safety.get_status()
+    
+    log.section("Bot Status")
+    log.item("Can trade", status["can_trade"])
+    log.item("Emergency stop", status["emergency_stop"])
+    log.item("Circuit broken", status["circuit_broken"])
+    log.item("Consecutive errors", status["consecutive_errors"])
+    log.item("Total trades", status["total_trades"])
+    log.item("Last cycle", status["last_cycle"] or "Never")
+    log.item("Last error", status["last_error"] or "None")
+    
+    # Check positions
+    if not args.quick:
+        log.section("Positions")
+        try:
+            client = PolymarketClient(get_settings())
+            client.initialize()
+            trades = client.get_trades()
+            log.item("Recent trades", len(trades))
+        except:
+            log.warning("Could not fetch trades")
+
 
 
 def cmd_balance(args):
@@ -287,6 +369,20 @@ def main():
     # WebSocket command
     ws_parser = subparsers.add_parser("ws", help="Test WebSocket streaming")
     ws_parser.set_defaults(func=cmd_ws)
+    
+    # Emergency stop command
+    stop_parser = subparsers.add_parser("emergency-stop", help="Emergency stop controls")
+    stop_parser.add_argument("--clear", action="store_true", help="Clear emergency stop")
+    stop_parser.set_defaults(func=cmd_emergency_stop)
+    
+    # Resume command
+    resume_parser = subparsers.add_parser("resume", help="Resume after emergency stop")
+    resume_parser.set_defaults(func=cmd_resume)
+    
+    # Status command
+    status_parser = subparsers.add_parser("status", help="Check bot status")
+    status_parser.add_argument("--quick", action="store_true", help="Quick status check")
+    status_parser.set_defaults(func=cmd_status)
     
     args = parser.parse_args()
     
