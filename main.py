@@ -188,6 +188,86 @@ def cmd_status(args):
             log.warning("Could not fetch trades")
 
 
+def cmd_sell_all(args):
+    """Sell everything - close all positions and cancel orders."""
+    log = IntelligentLogger()
+    log.banner("SELL ALL POSITIONS")
+    
+    settings = get_settings()
+    setup_logging(settings)
+    
+    client = PolymarketClient(settings)
+    client.initialize()
+    
+    log.section("1. Cancelling Open Orders")
+    try:
+        open_orders = client.get_open_orders()
+        log.item("Open orders found", len(open_orders))
+        
+        for order in open_orders:
+            order_id = order.get("orderID")
+            if order_id:
+                try:
+                    client.cancel_order(order_id)
+                    log.success(f"Cancelled: {order_id[:20]}...")
+                except Exception as e:
+                    log.error(f"Failed to cancel {order_id[:20]}: {e}")
+        
+        # Cancel all
+        try:
+            client.cancel_all()
+            log.success("All orders cancelled")
+        except Exception as e:
+            log.error(f"Cancel all failed: {e}")
+            
+    except Exception as e:
+        log.error(f"Error fetching orders: {e}")
+    
+    log.section("2. Closing Positions")
+    try:
+        trades = client.get_trades()
+        log.item("Recent trades", len(trades))
+        
+        if trades:
+            for trade in trades:
+                token_id = trade.get("asset_id")
+                size = float(trade.get("size", 0))
+                price = float(trade.get("price", 0))
+                side = trade.get("side", "")
+                
+                if size > 0:
+                    log.item(f"Position", f"{side} {size:.2f} @ ${price:.2f}")
+                    
+                    if args.execute:
+                        try:
+                            # Sell to close (opposite side)
+                            close_side = "SELL" if side == "BUY" else "BUY"
+                            resp = client.place_market_order(
+                                token_id=token_id,
+                                amount=size * price,
+                                side=close_side,
+                                order_type="FOK"
+                            )
+                            log.success(f"Closed: {resp.get('orderID', 'N/A')[:20]}...")
+                        except Exception as e:
+                            log.error(f"Failed to close position: {e}")
+        else:
+            log.item("No positions", "")
+            
+    except Exception as e:
+        log.error(f"Error fetching positions: {e}")
+    
+    log.section("3. Final Balance")
+    balance = client.get_balance()
+    log.item("USDC Balance", f"${balance.get('usdc', 0):,.2f}")
+    log.item("Allowance", f"${balance.get('allowance', 0):,.2f}")
+    
+    if not args.execute:
+        log.warning("\nDRY RUN - Add --execute to actually sell")
+    else:
+        log.success("\n✅ All positions closed!")
+
+
 
 def cmd_balance(args):
     """Check Polymarket balance."""
@@ -383,6 +463,11 @@ def main():
     status_parser = subparsers.add_parser("status", help="Check bot status")
     status_parser.add_argument("--quick", action="store_true", help="Quick status check")
     status_parser.set_defaults(func=cmd_status)
+    
+    # Sell all command
+    sell_parser = subparsers.add_parser("sell-all", help="Sell all positions and cancel orders")
+    sell_parser.add_argument("--execute", action="store_true", help="Execute sell (dry run without this flag)")
+    sell_parser.set_defaults(func=cmd_sell_all)
     
     args = parser.parse_args()
     
