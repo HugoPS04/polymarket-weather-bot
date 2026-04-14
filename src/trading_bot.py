@@ -57,6 +57,11 @@ class WeatherTradingBot:
         
         # Live logger for console output
         self.logger_console = IntelligentLogger("TradeLog")
+        
+        # Initialize
+        self.initialize()
+        
+        return self
     
     def initialize(self) -> None:
         """Initialize all components."""
