@@ -54,6 +54,9 @@ class WeatherTradingBot:
         # Logging
         self.log_dir = Path("logs")
         self.log_dir.mkdir(exist_ok=True)
+        
+        # Live logger for console output
+        self.logger_console = IntelligentLogger("TradeLog")
     
     def initialize(self) -> None:
         """Initialize all components."""
@@ -253,6 +256,9 @@ class WeatherTradingBot:
             logger.info(f"  Current price: ${signal['current_price']:.2f} (entry: ${signal['entry_price']:.2f})")
             logger.info(f"  P&L: {signal['pnl_pct']:.1%}")
             
+            # Live log exit
+            self._log_exit(signal)
+            
             if self.settings.live_trading:
                 # Execute exit
                 self._execute_exit(signal)
@@ -268,6 +274,30 @@ class WeatherTradingBot:
                 order_type="FOK"
             )
             logger.info(f"Exit order placed: {response.get('orderID', 'N/A')}")
+        
+        # Live log exit execution
+        self._log_exit_executed(exit_signal)
+    
+    def _log_exit(self, signal) -> None:
+        """Log exit signal to console."""
+        try:
+            pnl = signal['pnl_pct']
+            emoji = "💰" if pnl > 0 else "📉"
+            self.logger_console.banner(f"{emoji} EXIT SIGNAL")
+            self.logger_console.item("Reason", signal['reason'])
+            self.logger_console.item("Exit amount", f"${signal['exit_amount']:.2f}")
+            self.logger_console.item("Entry", f"${signal['entry_price']:.2f}")
+            self.logger_console.item("Current", f"${signal['current_price']:.2f}")
+            self.logger_console.item("P&L", f"{pnl:.1%}")
+        except:
+            pass
+    
+    def _log_exit_executed(self, signal) -> None:
+        """Log exit executed to console."""
+        try:
+            self.logger_console.success(f"Exit executed: {signal.get('order_id', 'N/A')[:20]}...")
+        except:
+            pass
         except Exception as e:
             logger.error(f"Exit order failed: {e}")
     
@@ -294,6 +324,33 @@ class WeatherTradingBot:
             "signal_reasoning": signal.reasoning,
             "timestamp": datetime.now().isoformat()
         }
+    
+    def _log_position_opened(self, signal, size, response) -> None:
+        """Log position opened to console."""
+        try:
+            self.logger_console.banner("📌 POSITION OPENED")
+            self.logger_console.item("Market", signal.market_question[:50])
+            self.logger_console.item("Outcome", signal.outcome)
+            self.logger_console.item("Entry price", f"${signal.market_price:.2f}")
+            self.logger_console.item("Size", f"${size:.2f}")
+            self.logger_console.item("Model prob", f"{signal.model_probability:.0%}")
+            self.logger_console.item("Edge", f"{signal.edge:.0%}")
+            self.logger_console.item("Confidence", f"{signal.confidence:.0%}")
+            self.logger_console.item("Order ID", response.get("orderID", "N/A")[:20])
+            self.logger_console.item("Time", datetime.now().strftime("%H:%M:%S"))
+        except Exception as e:
+            logger.debug(f"Console log failed: {e}")
+    
+    def _log_position_opened_simple(self, opportunity, size) -> None:
+        """Log position opened (simple version for websocket)."""
+        try:
+            self.logger_console.banner("📌 POSITION OPENED (WebSocket)")
+            self.logger_console.item("Market", opportunity.market.question[:50])
+            self.logger_console.item("Price", f"${opportunity.market_price:.2f}")
+            self.logger_console.item("Size", f"${size:.2f}")
+            self.logger_console.item("Edge", f"{opportunity.edge:.0%}")
+        except:
+            pass
     
     def _subscribe_to_websocket(self, markets: List[Market]) -> None:
         """Subscribe to WebSocket updates for market tokens."""
