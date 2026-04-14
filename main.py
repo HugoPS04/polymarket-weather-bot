@@ -116,8 +116,50 @@ def cmd_balance(args):
     client.initialize()
     
     balance = client.get_balance()
-    print(f"\nUSDC Balance: ${balance.get('usdc', 0):,.2f}")
-    print(f"Polygon Address: {client.client.get_address()}")
+    print(f"\n{'='*50}")
+    print(f"  USDC Balance: ${balance.get('usdc', 0):,.2f}")
+    print(f"  Allowance: ${balance.get('allowance', 0):,.2f}")
+    print(f"{'='*50}")
+    print(f"  Wallet: {client.client.get_address()}")
+    print(f"{'='*50}\n")
+
+
+def cmd_positions(args):
+    """Check Polymarket positions and trades."""
+    settings = get_settings()
+    setup_logging(settings)
+    
+    client = PolymarketClient(settings)
+    client.initialize()
+    
+    balance = client.get_balance()
+    print(f"\n{'='*50}")
+    print(f"  USDC Balance: ${balance.get('usdc', 0):,.2f}")
+    print(f"{'='*50}\n")
+    
+    # Get open orders
+    open_orders = client.get_open_orders()
+    if open_orders:
+        print(f"  Open Orders: {len(open_orders)}")
+        for order in open_orders[:5]:
+            print(f"    - {order.get('side')} {order.get('size')} @ ${float(order.get('price', 0)):.2f}")
+    else:
+        print("  Open Orders: None")
+    
+    # Get trades
+    trades = client.get_trades()
+    if trades:
+        print(f"\n  Recent Trades: {len(trades)}")
+        for trade in trades[:5]:
+            size = float(trade.get('size', 0))
+            price = float(trade.get('price', 0))
+            cost = size * price
+            print(f"    - {trade.get('side')} {size:.2f} @ ${price:.2f} = ${cost:.2f}")
+            print(f"      Asset: {trade.get('asset_id', '')[:30]}...")
+    else:
+        print("\n  Recent Trades: None")
+    
+    print()
 
 
 def cmd_scan(args):
@@ -233,6 +275,10 @@ def main():
     # Balance command
     balance_parser = subparsers.add_parser("balance", help="Check Polymarket balance")
     balance_parser.set_defaults(func=cmd_balance)
+    
+    # Positions command
+    positions_parser = subparsers.add_parser("positions", help="Check Polymarket positions and trades")
+    positions_parser.set_defaults(func=cmd_positions)
     
     # Scan command
     scan_parser = subparsers.add_parser("scan", help="Scan weather markets")

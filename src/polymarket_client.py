@@ -84,51 +84,40 @@ class PolymarketClient:
     
     def get_positions(self, market: Optional[str] = None) -> List[Dict]:
         """
-        Get current positions (aggregated from trades).
+        Get current positions (from open orders and trades).
         
-        Args:
-            market: Optional market address to filter positions
-            
         Returns:
             List of position dictionaries
         """
         if not self._initialized:
             self.initialize()
         try:
-            # Get trades to calculate positions
+            # Get open orders (pending positions)
+            open_orders = self.client.get_open_orders()
+            positions = []
+            
+            for order in open_orders:
+                positions.append({
+                    "asset_id": order.get("asset_id"),
+                    "side": order.get("side"),
+                    "size": float(order.get("size", 0)),
+                    "price": float(order.get("price", 0)),
+                    "order_id": order.get("orderID"),
+                    "status": order.get("status", "OPEN")
+                })
+            
+            # Also get recent trades
             trades = self.client.get_trades()
-            if not trades:
-                return []
+            for trade in trades[:10]:  # Last 10 trades
+                positions.append({
+                    "asset_id": trade.get("asset_id"),
+                    "side": trade.get("side"),
+                    "size": float(trade.get("size", 0)),
+                    "price": float(trade.get("price", 0)),
+                    "status": "FILLED"
+                })
             
-            # Aggregate trades by market/asset
-            positions = {}
-            for trade in trades:
-                asset_id = trade.get("asset_id")
-                if asset_id and asset_id not in positions:
-                    positions[asset_id] = {
-                        "asset_id": asset_id,
-                        "outcome": trade.get("outcome", "Unknown"),
-                        "side": trade.get("side"),
-                        "size": 0,
-                        "avg_price": 0,
-                        "total_cost": 0,
-                        "trades": []
-                    }
-                
-                size = float(trade.get("size", 0))
-                price = float(trade.get("price", 0))
-                
-                positions[asset_id]["size"] += size
-                positions[asset_id]["total_cost"] += size * price
-                positions[asset_id]["trades"].append(trade)
-            
-            # Calculate average price
-            for asset_id, pos in positions.items():
-                if pos["size"] > 0:
-                    pos["avg_price"] = pos["total_cost"] / pos["size"]
-                del pos["trades"]  # Remove trade details for cleaner output
-            
-            return list(positions.values())
+            return positions
         except Exception as e:
             logger.warning(f"Positions check failed: {e}")
             return []
