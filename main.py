@@ -137,27 +137,18 @@ def cmd_positions(args):
     print(f"  USDC Balance: ${balance.get('usdc', 0):,.2f}")
     print(f"{'='*50}\n")
     
-    # Get open orders
-    open_orders = client.get_open_orders()
-    if open_orders:
-        print(f"  Open Orders: {len(open_orders)}")
-        for order in open_orders[:5]:
-            print(f"    - {order.get('side')} {order.get('size')} @ ${float(order.get('price', 0)):.2f}")
-    else:
-        print("  Open Orders: None")
-    
     # Get trades
     trades = client.get_trades()
     if trades:
-        print(f"\n  Recent Trades: {len(trades)}")
-        for trade in trades[:5]:
+        print(f"  Recent Trades: {len(trades)}")
+        for trade in trades[:10]:
             size = float(trade.get('size', 0))
             price = float(trade.get('price', 0))
             cost = size * price
             print(f"    - {trade.get('side')} {size:.2f} @ ${price:.2f} = ${cost:.2f}")
             print(f"      Asset: {trade.get('asset_id', '')[:30]}...")
     else:
-        print("\n  Recent Trades: None")
+        print("  Recent Trades: None")
     
     print()
 
