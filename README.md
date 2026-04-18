@@ -386,6 +386,25 @@ sudo journalctl -u polymarket-weather-bot -f
 tail -f logs/bot.log
 ```
 
+### Stopping the Bot
+
+```bash
+# Stop the service
+sudo systemctl stop polymarket-weather-bot
+
+# Disable auto-start (optional)
+sudo systemctl disable polymarket-weather-bot
+```
+
+If you need to close all positions before stopping:
+```bash
+# Close all positions and cancel orders
+python main.py sell-all --execute
+
+# Then stop the service
+sudo systemctl stop polymarket-weather-bot
+```
+
 ## License
 
 MIT
