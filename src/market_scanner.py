@@ -49,6 +49,7 @@ class MarketScanner:
     def _location_in_question(self, question: str) -> bool:
         """Check if any configured location is mentioned in the market question."""
         if not self.locations:
+            logger.debug(f"[DEBUG] No locations configured, accepting all markets")
             return True  # No locations configured, accept all
 
         question_lower = question.lower()
@@ -88,15 +89,23 @@ class MarketScanner:
             List of Market objects (location-filtered)
         """
         markets = []
+        location_names = [loc.name for loc in self.locations] if self.locations else []
+        logger.info(f"[DEBUG] MarketScanner locations: {location_names}")
 
         # Search weather category
         weather_markets = self._fetch_markets(tag="weather", limit=limit)
+        logger.info(f"[DEBUG] Weather tag API returned {len(weather_markets)} markets")
         for m in weather_markets:
-            if self._is_weather_market(m) and self._location_in_question(m.question):
+            is_weather = self._is_weather_market(m)
+            loc_match = self._location_in_question(m.question)
+            if is_weather and loc_match:
                 markets.append(m)
+            elif is_weather and not loc_match:
+                logger.debug(f"[DEBUG] Filtered out (location): {m.question[:60]}")
 
         # Also search for weather keywords in all markets
         all_markets = self._fetch_markets(limit=limit * 2)
+        logger.info(f"[DEBUG] General API returned {len(all_markets)} markets")
         for market in all_markets:
             if self._is_weather_market(market) and market not in markets:
                 if self._location_in_question(market.question):
