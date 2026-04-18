@@ -2,6 +2,7 @@
 Polymarket market scanner for weather-related markets.
 Discovers active weather markets and extracts token IDs for trading.
 """
+import json
 import logging
 import requests
 from typing import Dict, List, Optional, Any
@@ -78,46 +79,126 @@ class MarketScanner:
 
         return False
 
+    def _generate_temp_slugs(self, city: str, days_ahead: int = 14) -> List[str]:
+        """Generate market slugs for temperature forecasts."""
+        from datetime import datetime, timedelta
+        slugs = []
+        city_slug = city.lower().replace(" ", "-")
+        for d in range(1, days_ahead + 1):
+            date = datetime.now() + timedelta(days=d)
+            date_str = date.strftime("%B-%d-%Y").lower()  # e.g. "april-25-2026"
+            slug = f"highest-temperature-in-{city_slug}-on-{date_str}"
+            slugs.append(slug)
+        return slugs
+
     def get_weather_markets(self, limit: int = 50) -> List[Market]:
         """
-        Fetch active weather-related markets matching configured locations.
+        Fetch active temperature forecast markets for configured cities.
+        Uses slug-based discovery: highest-temperature-in-{city}-on-{date}
 
         Returns:
-            List of Market objects (location-filtered)
+            List of Market objects
         """
         markets = []
-        location_names = [loc.name for loc in self.locations] if self.locations else []
-        logger.info(f"[DEBUG] MarketScanner locations: {location_names}")
+        city_names = [loc.name for loc in self.locations] if self.locations else []
+        days_ahead = 14  # Look 14 days ahead
 
-        # Gamma API tag=weather is broken - it returns random markets
-        # Fetch all markets and filter by weather keywords + location
-        weather_kw = ["temperature", "rain", "snow", "degree", "fahrenheit", "celsius",
-                       "precipitation", "storm", "hurricane", "thunder", "heat", "cold", "freeze", "weather"]
+        logger.info(f"[MarketScan] Scanning temperature markets for: {city_names}")
 
-        # Fetch markets from API (no tag filter - tag is broken)
-        all_markets = self._fetch_markets(limit=limit * 4)
-        logger.info(f"[DEBUG] API returned {len(all_markets)} total markets")
+        # Generate slugs for each city and date
+        all_slugs = []
+        for loc in self.locations:
+            city_slugs = self._generate_temp_slugs(loc.name, days_ahead)
+            all_slugs.extend(city_slugs)
 
-        # Filter: must match weather keywords AND be in a configured city
-        matched_questions = []
-        for market in all_markets:
-            q_lower = market.question.lower()
-            has_weather_kw = any(kw in q_lower for kw in weather_kw)
-            loc_match = self._location_in_question(market.question)
-            if has_weather_kw and loc_match:
-                markets.append(market)
-                matched_questions.append(market.question[:80])
+        logger.info(f"[MarketScan] Checking {len(all_slugs)} potential market slugs")
+        found_count = 0
+        active_count = 0
 
-        # Log what we found
-        if matched_questions:
-            logger.info(f"[DEBUG] Found {len(matched_questions)} weather markets for configured cities:")
-            for q in matched_questions[:10]:
-                logger.info(f"[DEBUG]   - {q[:80]}")
-        else:
-            logger.info(f"[DEBUG] No weather markets found for {[loc.name for loc in self.locations]}")
+        # Fetch each slug from the events API
+        for slug in all_slugs:
+            try:
+                event = self._fetch_event_by_slug(slug)
+                if not event or not event.get("active", False) or event.get("closed", True):
+                    continue
 
-        logger.info(f"Found {len(markets)} weather-related markets (filtered by location)")
+                event_markets = event.get("markets", [])
+                active_count += 1
+
+                for mkt_data in event_markets:
+                    # Only include binary YES/NO temperature bucket markets
+                    # Parse outcomes - API returns JSON string
+                    try:
+                        outcomes = json.loads(mkt_data.get("outcomes", "[]"))
+                    except (json.JSONDecodeError, TypeError):
+                        outcomes = []
+                    if not isinstance(outcomes, list) or len(outcomes) != 2:
+                        continue
+
+                    question = mkt_data.get("question", "")
+                    if "highest temperature" not in question.lower():
+                        continue
+
+                    # Parse price
+                    try:
+                        outcome_prices = json.loads(mkt_data.get("outcomePrices", "[]"))
+                    except (json.JSONDecodeError, TypeError):
+                        outcome_prices = []
+
+                    # Parse CLOB token IDs
+                    try:
+                        clob_token_ids = json.loads(mkt_data.get("clobTokenIds", "[]"))
+                    except (json.JSONDecodeError, TypeError):
+                        clob_token_ids = []
+
+                    # Parse dates
+                    try:
+                        end_date = datetime.fromisoformat(mkt_data.get("endDate", "").replace("Z", "+00:00"))
+                    except (ValueError, TypeError):
+                        end_date = datetime.now()
+
+                    try:
+                        start_date = datetime.fromisoformat(mkt_data.get("startDate", "").replace("Z", "+00:00"))
+                    except (ValueError, TypeError):
+                        start_date = datetime.now()
+
+                    market = Market(
+                        question=question,
+                        slug=mkt_data.get("slug", slug),
+                        market_address=mkt_data.get("address", ""),
+                        condition_id=mkt_data.get("conditionId", ""),
+                        clob_token_ids=clob_token_ids,
+                        outcomes=outcomes,
+                        outcome_prices=[float(p) for p in outcome_prices],
+                        volume=float(mkt_data.get("volume", 0) or 0),
+                        liquidity=float(mkt_data.get("liquidity", 0) or 0),
+                        end_date=end_date,
+                        category="temperature",
+                        status="open" if not mkt_data.get("closed", True) else "closed",
+                        neg_risk=mkt_data.get("negRisk", False)
+                    )
+                    markets.append(market)
+                    found_count += 1
+
+            except Exception as e:
+                logger.debug(f"[MarketScan] Error fetching {slug}: {e}")
+                continue
+
+        logger.info(f"[MarketScan] Checked {len(all_slugs)} slugs, found {active_count} active events, {found_count} temperature bucket markets")
         return markets
+
+    def _fetch_event_by_slug(self, slug: str) -> Optional[Dict]:
+        """Fetch a single event by its slug."""
+        try:
+            response = self.session.get(
+                f"{self.GAMMA_API}/events/slug/{slug}",
+                timeout=10
+            )
+            if response.status_code == 200:
+                return response.json()
+        except Exception as e:
+            logger.debug(f"Error fetching event {slug}: {e}")
+        return None
 
 
     def _fetch_markets(self, tag: str = None, limit: int = 50) -> List[Market]:
