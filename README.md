@@ -10,6 +10,7 @@ Autonomous trading bot that analyzes weather forecasts and trades on Polymarket 
   - **Open-Meteo** (global fallback) - Free, no API key
   - **OpenWeatherMap** (optional) - Requires API key
 - **Edge Detection**: Compares weather model probabilities to market prices
+- **Kelly Criterion Sizing**: Mathematical position sizing for optimal capital allocation
 - **Automated Trading**: Places limit orders when edge exceeds threshold
 - **Real-Time Prices**: WebSocket streaming for instant price updates and trade triggers
 - **Position Management**: Tracks positions, P&L, and exposure limits
@@ -104,6 +105,9 @@ python main.py run
 # Single cycle (for cron/testing)
 python main.py run --once
 
+# WebSocket mode (real-time price streaming + instant trade triggers)
+python main.py run --websocket
+
 # Check balance
 python main.py balance
 
@@ -113,8 +117,17 @@ python main.py scan --limit 50
 # Test weather API
 python main.py weather
 
-# Test WebSocket streaming (real-time prices)
+# Test WebSocket streaming standalone
 python main.py ws
+
+# Close ALL positions and cancel all orders
+python main.py sell-all --execute
+
+# Check current positions
+python main.py positions
+
+# Check bot status
+python main.py status
 ```
 
 ## Configuration
@@ -126,10 +139,39 @@ python main.py ws
 | `MAX_POSITION_SIZE` | 100 | Max USDC per position |
 | `MAX_TOTAL_EXPOSURE` | 500 | Max total USDC exposure |
 | `MIN_EDGE_THRESHOLD` | 0.05 | Minimum edge (5%) to trade |
+| `ORDER_TYPE` | GTC | Order type: GTC, FOK, or FAK |
+| `KELLY_ENABLED` | true | Use Kelly Criterion for position sizing |
+| `KELLY_FRACTION` | 0.25 | Fraction of Kelly to bet (0.25 = quarter Kelly) |
+| `KELLY_MIN_BET` | 0.5 | Minimum bet size (USDC) |
+| `KELLY_MAX_BET` | 10 | Maximum bet size (USDC) |
 | `WEATHER_API_SOURCE` | noaa | `noaa` (US), `openweathermap`, or `openmeteo` |
 | `WEATHER_LOCATIONS` | Miami | Locations to monitor (name:lat:lon) |
 | `CHECK_INTERVAL` | 60 | Seconds between cycles |
 | `LIVE_TRADING` | false | Enable real trading |
+
+## Kelly Criterion Position Sizing
+
+The bot uses the Kelly Criterion to calculate optimal bet sizes:
+
+**Formula:** `f* = (bp - q) / b`
+
+Where:
+- **b** = odds received (payout ratio)
+- **p** = probability of winning (our model probability)
+- **q** = probability of losing (1 - p)
+
+**Example:**
+```
+Model probability: 65%
+Market price: 10% (implies 9x odds)
+
+b = 9, p = 0.65, q = 0.35
+Kelly = (9 × 0.65 - 0.35) / 9 = 0.622
+
+With 0.25 fraction: 0.155 × max_position = ~$15.50 bet
+```
+
+The Kelly fraction (default 0.25) reduces volatility risk. A fraction of 0.25 means you bet only 25% of what full Kelly would suggest.
 
 ## VPS Deployment
 
@@ -177,21 +219,22 @@ For periodic execution instead of continuous loop:
 
 ```
 polymarket-weather-bot/
-├── main.py                 # Entry point
+├── main.py                 # Entry point + CLI commands
 ├── requirements.txt        # Python dependencies
 ├── config/
-│   ├── settings.py        # Configuration management
-│   └── config.example.env # Example environment file
+│   ├── settings.py         # Configuration management
+│   └── config.example.env  # Example environment file
 ├── src/
 │   ├── __init__.py
-│   ├── polymarket_client.py  # Polymarket API wrapper
-│   ├── weather_client.py     # Weather API client
+│   ├── polymarket_client.py   # Polymarket API wrapper
+│   ├── weather_client.py      # Weather API client
 │   ├── market_scanner.py     # Market discovery
-│   └── trading_bot.py        # Main bot logic
-├── data/                    # Position storage
-├── logs/                    # Log files
+│   ├── trading_bot.py        # Main bot logic + Kelly sizing
+│   └── intelligent_logger.py # Formatted console output
+├── data/                   # Position storage
+├── logs/                   # Log files
 └── deploy/
-    └── systemd.service      # Systemd service template
+    └── systemd.service     # Systemd service template
 ```
 
 ## Trading Logic
@@ -202,7 +245,7 @@ The bot finds opportunities by:
 2. **Fetching** weather forecasts for monitored locations
 3. **Calculating** model probability from forecast data
 4. **Comparing** model probability to market price
-5. **Trading** when edge exceeds threshold
+5. **Trading** when edge exceeds threshold using Kelly sizing
 
 ### WebSocket Trading
 
@@ -229,14 +272,39 @@ Or test WebSocket streaming standalone:
 python main.py ws
 ```
 
-Example:
+### Console Output
+
+The bot uses formatted banners for important events:
+
+```
+╔══════════════════════════════════════╗
+║  📌 POSITION OPENED                  ║
+╠══════════════════════════════════════╣
+║  Market:  Will it rain in Miami t...  ║
+║  Outcome:  YES                       ║
+║  Entry price:  $0.35                 ║
+║  Size:  $12.50                       ║
+║  Model prob:  65%                    ║
+║  Edge:  30%                          ║
+╚══════════════════════════════════════╝
+
+╔══════════════════════════════════════╗
+║  💰 EXIT SIGNAL                      ║
+╠══════════════════════════════════════╣
+║  Reason:  Weather condition change    ║
+║  P&L:  +23.5%                        ║
+╚══════════════════════════════════════╝
+```
+
+Example trade:
 - Market: "Will it rain in Miami tomorrow?" 
 - Market price: YES @ 40%
 - Weather model: 65% chance of rain
-- Edge: 25% → **BUY YES**
+- Edge: 25% → **BUY YES** (Kelly suggests ~$15.50 with 0.25 fraction)
 
 ## Risk Management
 
+- **Kelly Criterion**: Mathematical position sizing for long-term growth
 - **Position limits**: Max $100 per position, $500 total
 - **Edge threshold**: Only trade when model has >5% edge
 - **Dry run mode**: Test without real money
