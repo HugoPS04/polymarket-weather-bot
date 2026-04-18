@@ -32,6 +32,30 @@ Autonomous trading bot that analyzes weather forecasts and trades on Polymarket 
                        └──────────────────┘
 ```
 
+## VPS Quickstart
+
+Assuming the bot is already installed and running as a systemd service:
+
+```bash
+# Check if the bot is running
+sudo systemctl status polymarket-weather-bot
+
+# View live logs
+sudo journalctl -u polymarket-weather-bot -f
+
+# Or view the bot log file
+tail -f logs/bot.log
+
+# Stop the bot
+sudo systemctl stop polymarket-weather-bot
+
+# Close all positions before stopping
+python main.py sell-all --execute
+sudo systemctl stop polymarket-weather-bot
+```
+
+---
+
 ## Quick Start
 
 ### Option A: Automated VPS Install
