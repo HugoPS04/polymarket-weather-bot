@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from config.settings import BotSettings, get_settings
+from src.consensus_engine import LocationConfig
 
 logger = logging.getLogger(__name__)
 
@@ -43,27 +44,65 @@ class MarketScanner:
             "User-Agent": "PolymarketWeatherBot/1.0",
             "Accept": "application/json"
         })
+        self.locations: List[LocationConfig] = getattr(self.settings, 'parsed_locations', [])
     
+    def _location_in_question(self, question: str) -> bool:
+        """Check if any configured location is mentioned in the market question."""
+        if not self.locations:
+            return True  # No locations configured, accept all
+
+        question_lower = question.lower()
+        question_normalized = question_lower.replace(" ", "")
+
+        for loc in self.locations:
+            loc_lower = loc.name.lower()
+            # Direct match
+            if loc_lower in question_lower:
+                return True
+            # Match without spaces
+            if loc_lower.replace(" ", "") in question_normalized:
+                return True
+            # Common aliases
+            aliases = {
+                "miami": ["miami"],
+                "new york": ["newyork", "new york", "nyc"],
+                "los angeles": ["losangeles", "los angeles", "la"],
+                "chicago": ["chicago"],
+                "houston": ["houston"],
+                "seattle": ["seattle"],
+                "austin": ["austin"]
+            }
+            city_key = loc_lower.replace(" ", "")
+            if city_key in aliases:
+                for alias in aliases[city_key]:
+                    if alias in question_lower or alias.replace(" ", "") in question_normalized:
+                        return True
+
+        return False
+
     def get_weather_markets(self, limit: int = 50) -> List[Market]:
         """
-        Fetch all active weather-related markets.
-        
+        Fetch active weather-related markets matching configured locations.
+
         Returns:
-            List of Market objects
+            List of Market objects (location-filtered)
         """
         markets = []
-        
+
         # Search weather category
         weather_markets = self._fetch_markets(tag="weather", limit=limit)
-        markets.extend(weather_markets)
-        
+        for m in weather_markets:
+            if self._is_weather_market(m) and self._location_in_question(m.question):
+                markets.append(m)
+
         # Also search for weather keywords in all markets
         all_markets = self._fetch_markets(limit=limit * 2)
         for market in all_markets:
             if self._is_weather_market(market) and market not in markets:
-                markets.append(market)
-        
-        logger.info(f"Found {len(markets)} weather-related markets")
+                if self._location_in_question(market.question):
+                    markets.append(market)
+
+        logger.info(f"Found {len(markets)} weather-related markets (filtered by location)")
         return markets
     
     def _fetch_markets(self, tag: str = None, limit: int = 50) -> List[Market]:
