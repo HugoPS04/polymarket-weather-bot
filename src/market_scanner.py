@@ -50,33 +50,30 @@ class MarketScanner:
         """Check if any configured location is mentioned in the market question."""
         if not self.locations:
             logger.debug(f"[DEBUG] No locations configured, accepting all markets")
-            return True  # No locations configured, accept all
+            return True
 
         question_lower = question.lower()
-        question_normalized = question_lower.replace(" ", "")
+
+        # Common city name aliases
+        aliases = {
+            "miami": ["miami", "miami fl"],
+            "seattle": ["seattle", "seattle wa"],
+            "new york": ["new york", "newyork", "nyc"],
+            "los angeles": ["los angeles", "losangeles", "la"],
+            "chicago": ["chicago"],
+            "houston": ["houston"],
+            "austin": ["austin", "austin tx"],
+        }
 
         for loc in self.locations:
-            loc_lower = loc.name.lower()
-            # Direct match
-            if loc_lower in question_lower:
+            loc_name = loc.name.lower()
+            # Direct match (handles "Miami", "Seattle", etc.)
+            if loc_name in question_lower:
                 return True
-            # Match without spaces
-            if loc_lower.replace(" ", "") in question_normalized:
-                return True
-            # Common aliases
-            aliases = {
-                "miami": ["miami"],
-                "new york": ["newyork", "new york", "nyc"],
-                "los angeles": ["losangeles", "los angeles", "la"],
-                "chicago": ["chicago"],
-                "houston": ["houston"],
-                "seattle": ["seattle"],
-                "austin": ["austin"]
-            }
-            city_key = loc_lower.replace(" ", "")
-            if city_key in aliases:
-                for alias in aliases[city_key]:
-                    if alias in question_lower or alias.replace(" ", "") in question_normalized:
+            # Alias match
+            if loc_name in aliases:
+                for alias in aliases[loc_name]:
+                    if alias in question_lower:
                         return True
 
         return False
@@ -100,9 +97,9 @@ class MarketScanner:
         all_markets = self._fetch_markets(limit=limit * 2)
         logger.info(f"[DEBUG] General API returned {len(all_markets)} markets")
 
-        # Log sample questions to understand what we're getting
+        # Log sample questions to understand what's being checked
+        logger.info(f"[DEBUG]   Locations to match: {[loc.name for loc in self.locations]}")
         for m in (weather_markets + all_markets)[:5]:
-            q_lower = m.question.lower()
             loc_match = self._location_in_question(m.question)
             logger.info(f"[DEBUG]   Q={m.question[:100]}")
             logger.info(f"[DEBUG]   loc_match={loc_match}")
