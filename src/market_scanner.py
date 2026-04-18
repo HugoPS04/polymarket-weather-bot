@@ -89,36 +89,32 @@ class MarketScanner:
         location_names = [loc.name for loc in self.locations] if self.locations else []
         logger.info(f"[DEBUG] MarketScanner locations: {location_names}")
 
-        # Search weather category (API already filters by tag)
-        weather_markets = self._fetch_markets(tag="weather", limit=limit)
-        logger.info(f"[DEBUG] Weather tag API returned {len(weather_markets)} markets")
+        # Gamma API tag=weather is broken - it returns random markets
+        # Fetch all markets and filter by weather keywords + location
+        weather_kw = ["temperature", "rain", "snow", "degree", "fahrenheit", "celsius",
+                       "precipitation", "storm", "hurricane", "thunder", "heat", "cold", "freeze", "weather"]
 
-        # Also search for weather keywords in all markets
-        all_markets = self._fetch_markets(limit=limit * 2)
-        logger.info(f"[DEBUG] General API returned {len(all_markets)} markets")
+        # Fetch markets from API (no tag filter - tag is broken)
+        all_markets = self._fetch_markets(limit=limit * 4)
+        logger.info(f"[DEBUG] API returned {len(all_markets)} total markets")
 
-        # Log sample questions to understand what's being checked
-        logger.info(f"[DEBUG]   Locations to match: {[loc.name for loc in self.locations]}")
-        for m in (weather_markets + all_markets)[:5]:
-            loc_match = self._location_in_question(m.question)
-            logger.info(f"[DEBUG]   Q={m.question[:100]}")
-            logger.info(f"[DEBUG]   loc_match={loc_match}")
-
-        # Add all weather tag markets that match location
-        for m in weather_markets:
-            if self._location_in_question(m.question):
-                markets.append(m)
-
-        # Add from general API: weather keywords AND location match
-        weather_kw = ["weather", "rain", "snow", "temperature", "degree", "fahrenheit", "celsius",
-                       "precipitation", "storm", "hurricane", "thunder", "heat", "cold", "freeze"]
+        # Filter: must match weather keywords AND be in a configured city
+        matched_questions = []
         for market in all_markets:
-            if market in markets:
-                continue
             q_lower = market.question.lower()
-            matched_kw = any(k in q_lower for k in weather_kw)
-            if matched_kw and self._location_in_question(market.question):
+            has_weather_kw = any(kw in q_lower for kw in weather_kw)
+            loc_match = self._location_in_question(market.question)
+            if has_weather_kw and loc_match:
                 markets.append(market)
+                matched_questions.append(market.question[:80])
+
+        # Log what we found
+        if matched_questions:
+            logger.info(f"[DEBUG] Found {len(matched_questions)} weather markets for configured cities:")
+            for q in matched_questions[:10]:
+                logger.info(f"[DEBUG]   - {q[:80]}")
+        else:
+            logger.info(f"[DEBUG] No weather markets found for {[loc.name for loc in self.locations]}")
 
         logger.info(f"Found {len(markets)} weather-related markets (filtered by location)")
         return markets
