@@ -24,7 +24,6 @@ from src.polymarket_client import PolymarketClient
 from src.market_scanner import MarketScanner
 from src.safety_manager import SafetyManager, IntelligentLogger, SafetyState
 
-[181 more lines in file. Use offset=19 to continue.
 
 
 def setup_logging(settings):
