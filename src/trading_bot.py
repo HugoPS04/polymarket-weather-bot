@@ -62,8 +62,6 @@ class WeatherTradingBot:
         
         # Initialize
         self.initialize()
-        
-        return self
     
     def initialize(self) -> None:
         """Initialize all components."""
