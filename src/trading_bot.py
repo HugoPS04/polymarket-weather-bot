@@ -15,6 +15,7 @@ from src.weather_client import WeatherClient, ConsensusForecast
 from src.market_scanner import MarketScanner, Market
 from src.consensus_engine import ConsensusEngine, TradingSignal
 from src.safety_manager import IntelligentLogger
+from src.exit_manager import ExitManager
 from src.websocket_client import PolymarketWebSocket, PriceUpdate, WebSocketPriceMonitor
 
 logger = logging.getLogger(__name__)
