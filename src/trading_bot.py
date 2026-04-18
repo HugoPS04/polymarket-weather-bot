@@ -279,8 +279,10 @@ class WeatherTradingBot:
                 order_type="FOK"
             )
             logger.info(f"Exit order placed: {response.get('orderID', 'N/A')}")
+        except Exception as e:
+            logger.error(f"Exit order failed: {e}")
         
-        # Live log exit execution
+        # Live log exit execution (always runs)
         self._log_exit_executed(exit_signal)
     
     def _log_exit(self, signal) -> None:
@@ -303,9 +305,7 @@ class WeatherTradingBot:
             self.logger_console.success(f"Exit executed: {signal.get('order_id', 'N/A')[:20]}...")
         except:
             pass
-        except Exception as e:
-            logger.error(f"Exit order failed: {e}")
-    
+
     def _calculate_position_size(self, signal: TradingSignal) -> float:
         """Calculate position size using Kelly Criterion.
         
